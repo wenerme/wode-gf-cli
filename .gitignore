@@ -1,0 +1,58 @@
+### System
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+*.swp
+*.swo
+*~
+
+### Dev
+.vscode/
+.idea/
+node_modules/
+
+### Data
+*.db
+*.db-shm
+*.db-wal
+
+### Local
+local/
+*.local.md
+*.local.sh
+*.local.json
+*.local.yaml
+*.local.http
+*.local.sql
+local.just
+
+### Temp
+tmp/
+temp/
+*.log
+dist/
+build/
+*.tsbuildinfo
+
+### Secrets
+*.sec.md
+*.sec.yaml
+*.sec.json
+.env
+.env.*
+
+
+### Agent / IDE tooling
+.agent/
+.agents/skills/
+.agents/docs/
+.claude/
+.codex/
+
+### Workspace
+.mcp-cli.json
+bun.lock
+bun.lockb
+.mcp.json
