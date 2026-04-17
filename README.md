@@ -1,6 +1,6 @@
 # wode-gf-cli
 
-CLI for exporting, importing, diffing, and patching Grafana resources.
+CLI for exporting, importing, diffing, patching, and rendering Grafana resources.
 
 中文文档见 [README.zh-CN.md](./README.zh-CN.md).
 
@@ -59,6 +59,9 @@ wode-gf-cli --name local --dry-run import local/grafana-export
 
 # apply push
 wode-gf-cli --name local import local/grafana-export
+
+# render a panel image
+wode-gf-cli --name local render-panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
 ```
 
 ## Single JSON Import

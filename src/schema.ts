@@ -62,3 +62,17 @@ export const WhereExprSchema = z.object({
   path: z.string().min(1),
   value: z.unknown(),
 });
+
+export const RenderPanelOptionsSchema = z.object({
+  dashboardUid: z.string().min(1),
+  panelId: z.number().int().positive(),
+  out: z.string().min(1),
+  from: z.string().min(1),
+  to: z.string().min(1),
+  width: z.number().int().min(100).max(4000),
+  height: z.number().int().min(100).max(4000),
+  tz: z.string().min(1),
+  theme: z.enum(["light", "dark"]),
+  vars: z.array(z.string()).default([]),
+});
+export type RenderPanelOptions = z.infer<typeof RenderPanelOptionsSchema>;
