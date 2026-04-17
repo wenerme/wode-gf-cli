@@ -10,6 +10,7 @@ English doc: [README.md](./README.md)
 - 从本地 JSON 导入 Grafana
 - 本地与远端资源差异对比
 - 单资源查询、补丁更新、删除
+- 渲染 Dashboard Panel 为图片（PNG）
 - 支持 `--dry-run`、`--output json`、`--quiet`，便于自动化/agent 调用
 
 支持的资源：
@@ -97,6 +98,9 @@ wode-gf-cli patch dashboard --uid <uid> --set dashboard.title="New Title"
 
 # 删除单个资源
 wode-gf-cli delete contact-point --uid <uid>
+
+# 渲染 panel 图片
+wode-gf-cli --name local render-panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
 ```
 
 说明：
