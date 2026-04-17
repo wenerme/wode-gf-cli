@@ -10,6 +10,7 @@ import {
   type ExportBundle,
   type GrafanaCliContext,
   GrafanaCliContextSchema,
+  RenderPanelOptionsSchema,
   type ResourceName,
   type ResourceSelector,
   ResourceSelectorSchema,
@@ -866,6 +867,52 @@ function parseSetExpr(expr: string, defaultPath?: string): { path: string; value
   return SetExprSchema.parse({ path: defaultPath, value: parseJsonLike(expr) });
 }
 
+function parsePositiveInt(input: string | undefined, fallback: number): number {
+  if (!input?.trim()) return fallback;
+  const parsed = Number.parseInt(input, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid positive integer: ${input}`);
+  }
+  return parsed;
+}
+
+function parseRenderVar(expr: string): { key: string; value: string } {
+  const index = expr.indexOf("=");
+  if (index <= 0) throw new Error(`Invalid --var expression: ${expr}. Expect key=value`);
+  const key = expr.slice(0, index).trim();
+  const value = expr.slice(index + 1).trim();
+  if (!key) throw new Error(`Invalid --var expression: ${expr}. Missing key`);
+  return { key, value };
+}
+
+function buildRenderPanelPath(options: {
+  dashboardUid: string;
+  panelId: number;
+  from: string;
+  to: string;
+  width: number;
+  height: number;
+  tz: string;
+  theme: "light" | "dark";
+  vars: string[];
+}): string {
+  const url = new URL(`/render/d-solo/${encodeURIComponent(options.dashboardUid)}/_`, "http://local");
+  url.searchParams.set("panelId", String(options.panelId));
+  url.searchParams.set("from", options.from);
+  url.searchParams.set("to", options.to);
+  url.searchParams.set("width", String(options.width));
+  url.searchParams.set("height", String(options.height));
+  url.searchParams.set("tz", options.tz);
+  url.searchParams.set("theme", options.theme);
+
+  for (const expr of options.vars) {
+    const { key, value } = parseRenderVar(expr);
+    url.searchParams.append(`var-${key}`, value);
+  }
+
+  return `${url.pathname}${url.search}`;
+}
+
 type OutputFormat = "text" | "json";
 type RuntimeContext = GrafanaCliContext & { output: OutputFormat; quiet: boolean };
 
@@ -1251,6 +1298,9 @@ Common workflows:
   # diff local workspace against remote
   ${CliName} --name local --output json diff -i local/grafana-export
 
+  # render a dashboard panel to image
+  ${CliName} --name local render-panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
+
   # push workflow: apply local changes to remote (use dry-run first)
   ${CliName} --name local --dry-run import local/grafana-export
   ${CliName} --name local import local/grafana-export
@@ -1469,6 +1519,62 @@ Common workflows:
     });
 
   program
+    .command("render-panel")
+    .description("Render a dashboard panel image to a local PNG file")
+    .requiredOption("--dashboard-uid <uid>", "dashboard uid")
+    .requiredOption("--panel-id <id>", "panel id")
+    .option("-o, --out <file>", "output PNG file", "local/panel.png")
+    .option("--from <from>", "time range start", "now-6h")
+    .option("--to <to>", "time range end", "now")
+    .option("--width <px>", "render width", "1600")
+    .option("--height <px>", "render height", "900")
+    .option("--tz <timezone>", "timezone", "UTC")
+    .option("--theme <theme>", "light|dark", "light")
+    .option("--var <expr>", "template variable key=value, repeatable", collectList, [])
+    .action(async function renderPanelAction(options) {
+      const ctx = parseCommonOptions(this as unknown as Command);
+      const parsed = RenderPanelOptionsSchema.parse({
+        dashboardUid: String(options.dashboardUid || "").trim(),
+        panelId: parsePositiveInt(options.panelId, 1),
+        out: path.resolve(options.out),
+        from: String(options.from || "now-6h").trim(),
+        to: String(options.to || "now").trim(),
+        width: parsePositiveInt(options.width, 1600),
+        height: parsePositiveInt(options.height, 900),
+        tz: String(options.tz || "UTC").trim(),
+        theme: String(options.theme || "light").trim(),
+        vars: options.var || [],
+      });
+
+      const renderPath = buildRenderPanelPath(parsed);
+
+      if (ctx.dryRun) {
+        printData(ctx, "dry-run", {
+          action: "render-panel",
+          dashboardUid: parsed.dashboardUid,
+          panelId: parsed.panelId,
+          renderPath,
+          out: parsed.out,
+          message: `[DRY-RUN] render panel ${parsed.dashboardUid}:${parsed.panelId} -> ${parsed.out}`,
+        });
+        return;
+      }
+
+      const client = new GrafanaClient(ctx);
+      const image = await client.requestBytes("GET", renderPath, [200]);
+      ensureDir(path.dirname(parsed.out));
+      fs.writeFileSync(parsed.out, Buffer.from(image));
+
+      printData(ctx, "render-complete", {
+        dashboardUid: parsed.dashboardUid,
+        panelId: parsed.panelId,
+        out: parsed.out,
+        size: image.length,
+        message: `Rendered panel image: ${parsed.out} (${image.length} bytes)`,
+      });
+    });
+
+  program
     .command("patch <resource>")
     .description("Patch a single remote resource with path/value updates")
     .option("--id <id>", "resource id selector")
@@ -1596,3 +1702,18 @@ Common workflows:
 
   await program.parseAsync(process.argv);
 }
+
+export const __test__ = {
+  parseEnvFile,
+  parseResources,
+  resourceFromType,
+  inferResourceFromObject,
+  parseWhereExpr,
+  parseSetExpr,
+  parseRenderVar,
+  buildRenderPanelPath,
+  pathSegments,
+  getPathValue,
+  setPathValue,
+  deepMerge,
+};

@@ -49,6 +49,37 @@ export class GrafanaClient {
       clearTimeout(timer);
     }
   }
+
+  async requestBytes(
+    method: "GET" | "POST" | "PUT" | "DELETE",
+    apiPath: string,
+    expected: number[] = [200],
+  ): Promise<Uint8Array> {
+    const url = apiPath.startsWith("http") ? apiPath : `${this.url}${apiPath}`;
+    const headers = new Headers({ Accept: "*/*" });
+    if (this.apiKey) headers.set("Authorization", `Bearer ${this.apiKey}`);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      if (this.debug) console.log(`[DEBUG] ${method} ${url}`);
+      const response = await fetch(url, {
+        method,
+        headers,
+        signal: controller.signal,
+      });
+
+      if (!expected.includes(response.status)) {
+        const text = await response.text();
+        throw new Error(`${response.status} ${method} ${apiPath}: ${text}`);
+      }
+
+      const buffer = await response.arrayBuffer();
+      return new Uint8Array(buffer);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
 
 export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>) {
