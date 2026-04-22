@@ -1,8 +1,23 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { Command } from "commander";
+import type { Command } from "commander";
 import { GrafanaClient, mapLimit } from "./client";
+import { createCommand } from "./command";
+import { buildListAndRenderCommands } from "./commands/build-list-render";
+import { buildMutateCommands } from "./commands/build-mutate";
+import { buildQueryCommand } from "./commands/build-query";
+import { buildSyncCommands } from "./commands/build-sync";
+import { buildValidateCommand } from "./commands/build-validate";
+import type { CliRuntime, CommandAppContext } from "./commands/runtime";
+import { asObject, asObjectArray, asString, getObjectField } from "./lib/json-narrow";
+import {
+  extractTemplatingValues,
+  resolveDatasourceUid,
+  resolveTemplateString,
+  resolveTemplateValue,
+  type TemplateVars,
+} from "./lib/template-vars";
 import {
   CliName,
   DefaultResources,
@@ -10,36 +25,23 @@ import {
   type ExportBundle,
   type GrafanaCliContext,
   GrafanaCliContextSchema,
-  RenderPanelOptionsSchema,
   type ResourceName,
   type ResourceSelector,
   ResourceSelectorSchema,
   SetExprSchema,
   WhereExprSchema,
 } from "./schema";
+import {
+  buildRenderPanelPath,
+  msToInterval,
+  parseRenderVar,
+  parseSkipPanelIds,
+  parseVarAssignments,
+  resolveTimeToMs,
+} from "./utils";
 
 type JsonObject = Record<string, unknown>;
 type MutableJson = Record<string, unknown> | unknown[];
-
-function asObject(value: unknown): JsonObject | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return value as JsonObject;
-}
-
-function asObjectArray(value: unknown): JsonObject[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is JsonObject => Boolean(asObject(item)));
-}
-
-function asString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function getObjectField(obj: JsonObject, key: string): JsonObject | undefined {
-  return asObject(obj[key]);
-}
 
 function createEmptyBundle(): ExportBundle {
   return {
@@ -701,7 +703,11 @@ function setPathValue(target: Record<string, unknown>, pathExpr: string, value: 
     if (typeof key === "number") {
       if (!Array.isArray(cursor)) throw new Error(`Path requires array at segment [${key}]`);
       if (cursor[key] === undefined) cursor[key] = typeof next === "number" ? [] : {};
-      cursor = cursor[key];
+      const nextCursor = cursor[key];
+      if (!nextCursor || typeof nextCursor !== "object") {
+        throw new Error(`Path requires object/array at segment [${key}]`);
+      }
+      cursor = nextCursor as MutableJson;
       continue;
     }
     if (Array.isArray(cursor)) throw new Error(`Path requires object at segment ${key}`);
@@ -867,50 +873,375 @@ function parseSetExpr(expr: string, defaultPath?: string): { path: string; value
   return SetExprSchema.parse({ path: defaultPath, value: parseJsonLike(expr) });
 }
 
-function parsePositiveInt(input: string | undefined, fallback: number): number {
-  if (!input?.trim()) return fallback;
-  const parsed = Number.parseInt(input, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`Invalid positive integer: ${input}`);
-  }
-  return parsed;
-}
-
-function parseRenderVar(expr: string): { key: string; value: string } {
-  const index = expr.indexOf("=");
-  if (index <= 0) throw new Error(`Invalid --var expression: ${expr}. Expect key=value`);
-  const key = expr.slice(0, index).trim();
-  const value = expr.slice(index + 1).trim();
-  if (!key) throw new Error(`Invalid --var expression: ${expr}. Missing key`);
-  return { key, value };
-}
-
-function buildRenderPanelPath(options: {
-  dashboardUid: string;
+type ValidateWarning = {
+  dashboardTitle: string;
+  panelTitle: string;
   panelId: number;
-  from: string;
-  to: string;
-  width: number;
-  height: number;
-  tz: string;
-  theme: "light" | "dark";
-  vars: string[];
-}): string {
-  const url = new URL(`/render/d-solo/${encodeURIComponent(options.dashboardUid)}/_`, "http://local");
-  url.searchParams.set("panelId", String(options.panelId));
-  url.searchParams.set("from", options.from);
-  url.searchParams.set("to", options.to);
-  url.searchParams.set("width", String(options.width));
-  url.searchParams.set("height", String(options.height));
-  url.searchParams.set("tz", options.tz);
-  url.searchParams.set("theme", options.theme);
+  refId: string;
+  message: string;
+};
 
-  for (const expr of options.vars) {
-    const { key, value } = parseRenderVar(expr);
-    url.searchParams.append(`var-${key}`, value);
+type ValidateError = {
+  dashboardTitle: string;
+  panelTitle: string;
+  panelId: number;
+  refId: string;
+  message: string;
+};
+
+type DashboardTarget = {
+  refId: string;
+  raw: JsonObject;
+};
+
+type QueryModeFlags = {
+  resourceAlias: ResourceName | undefined;
+  isDsKeyword: boolean;
+  isQuickQueryMode: boolean;
+};
+
+function detectQueryMode(
+  resourceArg: string,
+  options: {
+    sql?: string;
+    expr?: string;
+    queryJson?: string;
+    queryFile?: string;
+    query?: string[];
+  },
+): QueryModeFlags {
+  const resourceAlias = parseResourceAlias(resourceArg);
+  const isDsKeyword = resourceArg === "ds" || resourceArg === "datasource";
+  const isQuickQueryMode =
+    Boolean(
+      options.sql || options.expr || options.queryJson || options.queryFile || (options.query || []).length,
+    ) || isDsKeyword;
+  return { resourceAlias, isDsKeyword, isQuickQueryMode };
+}
+
+function resolveQueryDatasourceIdentifier(
+  resourceArg: string,
+  options: { uid?: string },
+  flags: QueryModeFlags,
+): string {
+  if (flags.resourceAlias && !flags.isDsKeyword && !options.uid) {
+    throw new Error(`Resource '${resourceArg}' conflicts with datasource query mode; pass --uid explicitly`);
   }
 
-  return `${url.pathname}${url.search}`;
+  let datasourceIdentifier = String(options.uid || "").trim();
+  if (!datasourceIdentifier && !flags.isDsKeyword && !flags.resourceAlias) {
+    datasourceIdentifier = resourceArg;
+  }
+  if (!datasourceIdentifier) {
+    throw new Error("query datasource requires identifier: use query <uid|name> --sql ... or --uid ...");
+  }
+  return datasourceIdentifier;
+}
+
+function normalizeRenderTarget(target: string): "panel" | "dashboard" {
+  const normalized = String(target || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "panel" || normalized === "dashboard") return normalized;
+  throw new Error(`Unsupported render target: ${target}. Use panel|dashboard`);
+}
+
+function parseQueryAssignment(expr: string): { path: string; value: unknown } {
+  const index = expr.indexOf("=");
+  if (index <= 0) {
+    throw new Error(`Invalid --query expression: ${expr}. Expect path=value`);
+  }
+  const pathExpr = expr.slice(0, index).trim();
+  const rawValue = expr.slice(index + 1);
+  if (!pathExpr) {
+    throw new Error(`Invalid --query expression: ${expr}. Missing path`);
+  }
+  return { path: pathExpr, value: parseJsonLike(rawValue) };
+}
+
+function parseJsonObjectOrThrow(input: string, sourceLabel: string): JsonObject {
+  const value = parseJsonLike(input);
+  const obj = asObject(value);
+  if (!obj) throw new Error(`${sourceLabel} must be a JSON object`);
+  return obj;
+}
+
+type ResolvedDatasource = {
+  uid: string;
+  name?: string;
+  type?: string;
+  jsonData?: JsonObject;
+};
+
+async function resolveDatasourceByIdentifier(
+  client: GrafanaClient,
+  identifier: string,
+  vars: TemplateVars,
+): Promise<ResolvedDatasource> {
+  const resolved = resolveTemplateString(identifier.trim(), vars);
+  if (!resolved) throw new Error("Datasource identifier is empty");
+  const datasources = asObjectArray(await client.request<unknown[]>("GET", "/api/datasources"));
+  const matched = datasources.find((ds) => asString(ds.uid) === resolved || asString(ds.name) === resolved);
+  if (!matched) {
+    throw new Error(`Datasource not found by uid/name: ${resolved}`);
+  }
+  const uid = asString(matched.uid);
+  if (!uid) throw new Error(`Datasource has no uid: ${resolved}`);
+  return {
+    uid,
+    name: asString(matched.name),
+    type: asString(matched.type),
+    jsonData: getObjectField(matched, "jsonData"),
+  };
+}
+
+function dashboardTitleOf(item: JsonObject): string {
+  const title = asString(item.title);
+  const dashboard = getObjectField(item, "dashboard");
+  return title || asString(dashboard?.title) || asString(item.uid) || "(untitled dashboard)";
+}
+
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function renderTable(headers: string[], rows: string[][]): string {
+  if (headers.length === 0) return "";
+  const widths = headers.map((h, i) => {
+    const rowMax = rows.reduce((max, row) => Math.max(max, (row[i] || "").length), 0);
+    return Math.max(h.length, rowMax);
+  });
+
+  const line = headers.map((h, i) => h.padEnd(widths[i] || h.length)).join(" | ");
+  const sep = widths.map((w) => "-".repeat(w)).join("-+-");
+  const body = rows.map((row) =>
+    row.map((cell, i) => (cell || "").padEnd(widths[i] || cell.length)).join(" | "),
+  );
+  return [line, sep, ...body].join("\n");
+}
+
+function renderFramesText(data: unknown, refId: string): string | undefined {
+  const body = asObject(data);
+  const results = body ? getObjectField(body, "results") : undefined;
+  const result = results ? getObjectField(results, refId) : undefined;
+  const frames = result ? asObjectArray(result.frames) : [];
+  if (frames.length === 0) return undefined;
+
+  const blocks: string[] = [];
+  for (const frame of frames) {
+    const schema = getObjectField(frame, "schema");
+    const fields = schema ? asObjectArray(schema.fields) : [];
+    let headers = fields.map((field, index) => asString(field.name) || `col_${index + 1}`);
+    const dataObject = getObjectField(frame, "data");
+    const columns = Array.isArray(dataObject?.values) ? (dataObject.values as unknown[]) : [];
+    const arrayColumns = columns.filter((col): col is unknown[] => Array.isArray(col));
+    if (headers.length === 0 && columns.length > 0) {
+      headers = Array.from({ length: columns.length }, (_, i) => `col_${i + 1}`);
+    }
+    const rowCount = arrayColumns.reduce((max, col) => Math.max(max, col.length), 0);
+
+    const rows: string[][] = [];
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      const row: string[] = [];
+      for (let colIndex = 0; colIndex < headers.length; colIndex += 1) {
+        const col = columns[colIndex];
+        const value = Array.isArray(col) ? col[rowIndex] : undefined;
+        row.push(formatCell(value));
+      }
+      rows.push(row);
+    }
+
+    blocks.push(renderTable(headers, rows));
+  }
+  return blocks.filter(Boolean).join("\n\n");
+}
+
+type ListRow = {
+  uid: string;
+  label: string;
+  folder?: string;
+  raw: JsonObject;
+};
+
+function rowsToTable(rows: ListRow[]): string {
+  const headers = ["uid", "title / name", "folder"];
+  const body = rows.map((row) => [row.uid, row.label, row.folder || ""]);
+  return renderTable(headers, body);
+}
+
+function extractPanelTargets(panel: JsonObject): DashboardTarget[] {
+  const targets = asObjectArray(panel.targets);
+  return targets.map((target, index) => ({
+    refId: asString(target.refId) || String.fromCharCode(65 + index),
+    raw: target,
+  }));
+}
+
+function collectDashboards(bundle: ExportBundle): JsonObject[] {
+  return asObjectArray(bundle.dashboards)
+    .map((entry) => {
+      const dashboard = getObjectField(entry, "dashboard");
+      if (!dashboard) return undefined;
+      const title = asString(entry.title) || asString(dashboard.title);
+      const uid = asString(entry.uid) || asString(dashboard.uid);
+      return {
+        ...entry,
+        title,
+        uid,
+        dashboard,
+      } as JsonObject;
+    })
+    .filter((v): v is JsonObject => Boolean(v));
+}
+
+async function validateDashboards(
+  ctx: RuntimeContext,
+  dashboards: JsonObject[],
+  options: {
+    from: string;
+    to: string;
+    timeoutMs: number;
+    intervalMs: number;
+    concurrency: number;
+    failFast: boolean;
+    skipPanelIds: number[];
+    vars: Record<string, string>;
+  },
+) {
+  const warnings: ValidateWarning[] = [];
+  const errors: ValidateError[] = [];
+  const client = new GrafanaClient({ ...ctx, timeoutMs: options.timeoutMs });
+  const skipSet = new Set(options.skipPanelIds);
+  const nowMs = Date.now();
+  const fromMs = resolveTimeToMs(options.from, nowMs);
+  const toMs = resolveTimeToMs(options.to, nowMs);
+  const rangeMs = Math.max(0, toMs - fromMs);
+  const rangeS = Math.round(rangeMs / 1000);
+
+  for (const dashboardEntry of dashboards) {
+    const dashboard = getObjectField(dashboardEntry, "dashboard");
+    if (!dashboard) continue;
+    const dashboardTitle = dashboardTitleOf(dashboardEntry);
+    const dashboardVars = {
+      ...extractTemplatingValues(dashboard),
+      ...options.vars,
+      __from: String(fromMs),
+      __to: String(toMs),
+      __timeFrom: `to_timestamp(${fromMs / 1000})`,
+      __timeTo: `to_timestamp(${toMs / 1000})`,
+      __timeFilter: `"time" BETWEEN to_timestamp(${fromMs / 1000}) AND to_timestamp(${toMs / 1000})`,
+      __interval_ms: String(options.intervalMs),
+      __interval: msToInterval(options.intervalMs),
+      __rate_interval: msToInterval(Math.max(options.intervalMs * 4, 240_000)),
+      __range: `${rangeS}s`,
+      __range_ms: String(rangeMs),
+      __range_s: String(rangeS),
+      __all: "ALL",
+      __user_login: "",
+      __org_name: "",
+    };
+
+    const panels = asObjectArray(dashboard.panels);
+    const tasks: Array<{ panel: JsonObject; target: DashboardTarget }> = [];
+    for (const panel of panels) {
+      for (const target of extractPanelTargets(panel)) {
+        tasks.push({ panel, target });
+      }
+    }
+
+    await mapLimit(tasks, options.concurrency, async ({ panel, target }) => {
+      const panelId = Number.parseInt(String(panel.id || "0"), 10) || 0;
+      if (skipSet.has(panelId)) {
+        warnings.push({
+          dashboardTitle,
+          panelTitle: asString(panel.title) || "(untitled panel)",
+          panelId,
+          refId: target.refId,
+          message: `Panel id ${panelId} skipped by --skip-panel-ids`,
+        });
+        return;
+      }
+
+      const panelDatasource = getObjectField(panel, "datasource");
+      const targetDatasource = getObjectField(target.raw, "datasource");
+      const datasourceUid = resolveDatasourceUid(
+        asString(panelDatasource?.uid),
+        asString(targetDatasource?.uid),
+        dashboardVars,
+      );
+
+      if (!datasourceUid) {
+        warnings.push({
+          dashboardTitle,
+          panelTitle: asString(panel.title) || "(untitled panel)",
+          panelId,
+          refId: target.refId,
+          message: "Skip target: datasource uid unresolved",
+        });
+        return;
+      }
+
+      const rawSql = asString(target.raw.rawSql) || asString(target.raw.rawQuery);
+      const expr = asString(target.raw.expr);
+      if (!rawSql && !expr) return;
+
+      const queryBody = resolveTemplateValue(
+        {
+          refId: target.refId,
+          datasource: { uid: datasourceUid },
+          rawSql,
+          rawQuery: rawSql,
+          expr,
+          format: asString(target.raw.format) || "table",
+          intervalMs: 60_000,
+          maxDataPoints: 1000,
+        },
+        dashboardVars,
+      ) as JsonObject;
+
+      const payload = {
+        from: String(fromMs),
+        to: String(toMs),
+        queries: [queryBody],
+      };
+
+      const response = await client.requestWithStatus<JsonObject>("POST", "/api/ds/query", payload);
+      const data = asObject(response.data);
+      const results = data ? getObjectField(data, "results") : undefined;
+      const result = results ? getObjectField(results, target.refId) : undefined;
+      const error = result ? asString(result.error) : undefined;
+      if (error) {
+        errors.push({
+          dashboardTitle,
+          panelTitle: asString(panel.title) || "(untitled panel)",
+          panelId,
+          refId: target.refId,
+          message: error,
+        });
+        if (options.failFast) {
+          throw new Error(
+            `Validation failed at ${dashboardTitle} / ${String(panel.title || panelId)} / ${target.refId}`,
+          );
+        }
+        return;
+      }
+
+      if (response.status !== 200) {
+        warnings.push({
+          dashboardTitle,
+          panelTitle: asString(panel.title) || "(untitled panel)",
+          panelId,
+          refId: target.refId,
+          message: `Skip target: /api/ds/query returned HTTP ${response.status}`,
+        });
+      }
+    });
+  }
+
+  return { errors, warnings };
 }
 
 type OutputFormat = "text" | "json";
@@ -946,7 +1277,7 @@ function parseCommonOptions(cmd: Command, cfg?: { requireUrl?: boolean }): Runti
     quiet?: boolean;
   };
 
-  const profile = options.name?.trim();
+  const profile = options.name?.trim() || envValue(["WODE_GF_CLI_NAME"]);
   const prefix = profile ? normalizePrefix(profile) : undefined;
 
   const url =
@@ -1003,21 +1334,23 @@ async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resour
       message: `Import folders: ${bundle.folders.length}`,
     });
     for (const folder of asObjectArray(bundle.folders)) {
-      if (!folder.uid || !folder.title) continue;
+      const folderUid = asString(folder.uid);
+      const folderTitle = asString(folder.title);
+      if (!folderUid || !folderTitle) continue;
       const body = {
-        uid: folder.uid,
-        title: folder.title,
+        uid: folderUid,
+        title: folderTitle,
       };
       if (ctx.dryRun) {
         printData(ctx, "dry-run", {
           resource: "folders",
           action: "upsert",
-          uid: folder.uid,
-          message: `[DRY-RUN] folder upsert ${String(folder.uid)}`,
+          uid: folderUid,
+          message: `[DRY-RUN] folder upsert ${folderUid}`,
         });
       } else {
         try {
-          await client.request("PUT", `/api/folders/${encodeURIComponent(folder.uid)}`, body, [200]);
+          await client.request("PUT", `/api/folders/${encodeURIComponent(folderUid)}`, body, [200]);
         } catch {
           await client.request("POST", "/api/folders", body, [200]);
         }
@@ -1035,7 +1368,8 @@ async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resour
     const byName = new Map(existing.map((v) => [String(v.name), v]));
 
     for (const raw of asObjectArray(bundle.datasources)) {
-      const source = stripMeta(raw);
+      const source = asObject(stripMeta(raw));
+      if (!source) continue;
       const datasource = removeKeys(source, [
         "id",
         "orgId",
@@ -1061,10 +1395,11 @@ async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resour
         continue;
       }
 
-      if (existingDs?.uid) {
+      const existingUid = existingDs ? asString(existingDs.uid) : undefined;
+      if (existingUid) {
         await client.request(
           "PUT",
-          `/api/datasources/uid/${encodeURIComponent(existingDs.uid)}`,
+          `/api/datasources/uid/${encodeURIComponent(existingUid)}`,
           datasource,
           [200],
         );
@@ -1080,14 +1415,17 @@ async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resour
       message: `Import dashboards: ${bundle.dashboards.length}`,
     });
     for (const item of asObjectArray(bundle.dashboards)) {
-      const cleanItem = stripMeta(item);
-      const dashboard = cleanItem.dashboard || cleanItem;
-      if (!dashboard?.uid && !dashboard?.title) continue;
+      const cleanItem = asObject(stripMeta(item));
+      if (!cleanItem) continue;
+      const dashboard = getObjectField(cleanItem, "dashboard") || cleanItem;
+      const dashboardUid = asString(dashboard.uid);
+      const dashboardTitle = asString(dashboard.title);
+      if (!dashboardUid && !dashboardTitle) continue;
 
       const cleaned = removeKeys(dashboard, ["id"]);
       const body = {
         dashboard: { ...cleaned, id: null },
-        folderUid: cleanItem.folderUid || undefined,
+        folderUid: asString(cleanItem.folderUid) || undefined,
         overwrite: true,
         message: `imported by ${CliName}`,
       };
@@ -1096,8 +1434,8 @@ async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resour
         printData(ctx, "dry-run", {
           resource: "dashboards",
           action: "upsert",
-          key: String(dashboard.uid || dashboard.title || "(unknown)"),
-          message: `[DRY-RUN] dashboard upsert ${String(dashboard.uid || dashboard.title || "(unknown)")}`,
+          key: dashboardUid || dashboardTitle || "(unknown)",
+          message: `[DRY-RUN] dashboard upsert ${dashboardUid || dashboardTitle || "(unknown)"}`,
         });
       } else {
         await client.request("POST", "/api/dashboards/db", body, [200]);
@@ -1111,21 +1449,24 @@ async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resour
       message: `Import alert-rules: ${bundle["alert-rules"].length}`,
     });
     for (const rule of asObjectArray(bundle["alert-rules"])) {
-      const cleanRule = stripMeta(rule);
+      const cleanRule = asObject(stripMeta(rule));
+      if (!cleanRule) continue;
+      const ruleUid = asString(cleanRule.uid);
+      const ruleTitle = asString(cleanRule.title);
       if (ctx.dryRun) {
         printData(ctx, "dry-run", {
           resource: "alert-rules",
           action: "upsert",
-          key: String(cleanRule.uid || cleanRule.title || "(unknown)"),
-          message: `[DRY-RUN] alert-rule upsert ${String(cleanRule.uid || cleanRule.title || "(unknown)")}`,
+          key: ruleUid || ruleTitle || "(unknown)",
+          message: `[DRY-RUN] alert-rule upsert ${ruleUid || ruleTitle || "(unknown)"}`,
         });
         continue;
       }
-      if (cleanRule.uid) {
+      if (ruleUid) {
         try {
           await client.request(
             "PUT",
-            `/api/v1/provisioning/alert-rules/${encodeURIComponent(cleanRule.uid)}`,
+            `/api/v1/provisioning/alert-rules/${encodeURIComponent(ruleUid)}`,
             cleanRule,
             [200],
           );
@@ -1144,21 +1485,24 @@ async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resour
       message: `Import contact-points: ${bundle["contact-points"].length}`,
     });
     for (const cp of asObjectArray(bundle["contact-points"])) {
-      const cleanCp = stripMeta(cp);
+      const cleanCp = asObject(stripMeta(cp));
+      if (!cleanCp) continue;
+      const cpUid = asString(cleanCp.uid);
+      const cpName = asString(cleanCp.name);
       if (ctx.dryRun) {
         printData(ctx, "dry-run", {
           resource: "contact-points",
           action: "upsert",
-          key: String(cleanCp.uid || cleanCp.name || "(unknown)"),
-          message: `[DRY-RUN] contact-point upsert ${String(cleanCp.uid || cleanCp.name || "(unknown)")}`,
+          key: cpUid || cpName || "(unknown)",
+          message: `[DRY-RUN] contact-point upsert ${cpUid || cpName || "(unknown)"}`,
         });
         continue;
       }
-      if (cleanCp.uid) {
+      if (cpUid) {
         try {
           await client.request(
             "PUT",
-            `/api/v1/provisioning/contact-points/${encodeURIComponent(cleanCp.uid)}`,
+            `/api/v1/provisioning/contact-points/${encodeURIComponent(cpUid)}`,
             cleanCp,
             [202],
           );
@@ -1263,441 +1607,60 @@ function parseIdOrUidSelector(idOrUid: string): ResourceSelector {
 export async function run() {
   loadEnv();
 
-  const program = new Command(CliName);
-  const collectList = (value: string, prev: string[]) => {
-    prev.push(value);
-    return prev;
+  const { program, collectList } = createCommand(CliName);
+  const runtime: CliRuntime = {
+    parseCommonOptions,
+    parseResources,
+    parseResourceAlias,
+    dedupeResources,
+    collectBundle,
+    fetchResources,
+    bundleToFiles,
+    importResources,
+    resourceItems,
+    selectResource,
+    getPathValue,
+    valueEqual,
+    hashObject,
+    diffArray,
+    printMessage,
+    printData,
+    rowsToTable,
+    normalizeRenderTarget,
+    ensureDir,
+    detectQueryMode,
+    resolveQueryDatasourceIdentifier,
+    resolveDatasourceByIdentifier,
+    parseJsonObjectOrThrow,
+    parseQueryAssignment,
+    setPathValue,
+    renderFramesText,
+    collectDashboards,
+    validateDashboards,
+    parseJsonLike,
+    deepMerge,
+    parseSetExpr,
+    createEmptyBundle,
+    setSingleResource,
+    deleteSingleResource,
+    parseIdOrUidSelector,
   };
-  program
-    .description("Grafana resource tool (export/import/diff/query/patch/delete)")
-    .option("-n, --name <name>", "profile name, e.g. myprofile -> myprofile_GRAFANA_URL/SERVICE_ACCOUNT_TOKEN")
-    .option("--url <url>", "Grafana URL")
-    .option("--service-account-token <token>", "Grafana service account token")
-    .option("--timeout <ms>", "request timeout in milliseconds", "20000")
-    .option("--dry-run", "show planned changes without writing")
-    .option("--output <format>", "output format: text|json", "text")
-    .option("-q, --quiet", "hide text progress logs")
-    .option("--debug", "debug HTTP requests");
+  const app: CommandAppContext = { collectList, runtime };
 
-  program.addHelpText(
-    "after",
-    `
-Common workflows:
+  for (const command of buildSyncCommands(app)) {
+    program.addCommand(command);
+  }
 
-  # dump/pull from remote to local workspace
-  ${CliName} --name local export -o local/grafana-export
+  program.addCommand(buildValidateCommand(app));
 
-  # local edit a single resource file
-  ${CliName} query dashboard --uid <uid> --json > local/dashboard.json
-  $EDITOR local/dashboard.json
+  for (const command of buildListAndRenderCommands(app)) {
+    program.addCommand(command);
+  }
 
-  # import a single json file (auto infer by payload, or set --type)
-  ${CliName} --name local import local/dashboard.json
-  ${CliName} --name local import local/resource.json --type dashboard
+  program.addCommand(buildQueryCommand(app));
 
-  # diff local workspace against remote
-  ${CliName} --name local --output json diff -i local/grafana-export
-
-  # render a dashboard panel to image
-  ${CliName} --name local render-panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
-
-  # push workflow: apply local changes to remote (use dry-run first)
-  ${CliName} --name local --dry-run import local/grafana-export
-  ${CliName} --name local import local/grafana-export
-`,
-  );
-
-  program
-    .command("export")
-    .description("Export Grafana resources to local json files")
-    .option("-o, --out <dir>", "output directory", "./grafana-export")
-    .option("-r, --resources <list>", `comma-separated resources: ${DefaultResources.join(",")}`)
-    .option("--compact", "write compact json")
-    .action(async function exportAction(options) {
-      const ctx = parseCommonOptions(this as unknown as Command);
-      const resources = parseResources(options.resources);
-      const outDir = path.resolve(options.out);
-
-      const client = new GrafanaClient(ctx);
-      const bundle = await fetchResources(client, resources);
-      bundle.profile = ctx.profile;
-
-      bundleToFiles(outDir, bundle, !options.compact);
-      printData(ctx, "export-complete", {
-        resources,
-        outputDir: outDir,
-        message: `Exported resources: ${resources.join(",")}\nOutput directory: ${outDir}`,
-      });
-    });
-
-  program
-    .command("import [sources...]")
-    .description("Import resources from local json files/directories to Grafana")
-    .option("-r, --resources <list>", `comma-separated resources: ${DefaultResources.join(",")}`)
-    .option(
-      "-t, --type <type>",
-      "fallback type when JSON has no __type (dashboard|connection|folder|alert-rule|contact-point|policy)",
-    )
-    .action(async function importAction(sources: string[] | undefined, options) {
-      const ctx = parseCommonOptions(this as unknown as Command);
-      const resources = parseResources(options.resources);
-      const fallbackType = parseResourceAlias(options.type);
-      if (options.type && !fallbackType) {
-        throw new Error(`Unsupported --type: ${options.type}`);
-      }
-      const sourceList = sources && sources.length > 0 ? sources : ["./grafana-export"];
-      const resolvedSources = sourceList.map((source) => path.resolve(source));
-      printData(ctx, "collect-sources", {
-        sources: resolvedSources,
-        message: `Collect sources: ${resolvedSources.join(", ")}`,
-      });
-      const merged = collectBundle(resolvedSources, fallbackType);
-      merged.resources = dedupeResources(resources);
-
-      await importResources(ctx, merged, resources);
-      printData(ctx, "import-complete", {
-        resources,
-        input: resolvedSources,
-        dryRun: ctx.dryRun,
-        message: `Imported resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}`,
-      });
-      if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
-    });
-
-  program
-    .command("diff")
-    .description("Diff local exported resources against current Grafana")
-    .option("-i, --in <dir>", "input directory", "./grafana-export")
-    .option("-r, --resources <list>", `comma-separated resources: ${DefaultResources.join(",")}`)
-    .option(
-      "--resource <resource>",
-      "single resource mode (dashboard|connection|folder|alert-rule|contact-point|policy)",
-    )
-    .option("--id <id>", "resource id selector")
-    .option("--uid <uid>", "resource uid selector")
-    .option("--match-name <name>", "resource name selector")
-    .option("--title <title>", "resource title selector")
-    .option("-w, --where <expr>", "filter path=value, repeatable", collectList, [])
-    .option("--path <path>", "only compare value at this path")
-    .option("--json", "print full diff as JSON")
-    .action(async function diffAction(options) {
-      const ctx = parseCommonOptions(this as unknown as Command);
-      const resources = parseResources(options.resources);
-      const inPath = path.resolve(options.in);
-
-      if (options.resource) {
-        const resource = parseResourceAlias(options.resource);
-        if (!resource) throw new Error(`Unsupported --resource: ${options.resource}`);
-
-        const selector: ResourceSelector = ResourceSelectorSchema.parse({
-          id: options.id,
-          uid: options.uid,
-          name: options.matchName,
-          title: options.title,
-          where: options.where || [],
-        });
-        const localBundle = collectBundle([inPath], resource);
-        const remoteBundle = await fetchResources(new GrafanaClient(ctx), [resource]);
-
-        const localItem = selectResource(resourceItems(localBundle, resource), resource, selector, true);
-        const remoteItem = selectResource(resourceItems(remoteBundle, resource), resource, selector, true);
-        const localValue = getPathValue(localItem, options.path);
-        const remoteValue = getPathValue(remoteItem, options.path);
-        const changed = !valueEqual(localValue, remoteValue);
-
-        if (options.json) {
-          console.log(
-            JSON.stringify(
-              {
-                resource,
-                selector,
-                path: options.path || null,
-                changed,
-                local: localValue,
-                remote: remoteValue,
-              },
-              null,
-              2,
-            ),
-          );
-        } else {
-          printMessage(ctx, `resource: ${resource}`);
-          printMessage(ctx, `path: ${options.path || "(root)"}`);
-          printMessage(ctx, `status: ${changed ? "changed" : "equal"}`);
-          if (changed) {
-            printMessage(ctx, `local: ${hashObject(localValue)}`);
-            printMessage(ctx, `remote: ${hashObject(remoteValue)}`);
-          }
-        }
-
-        if (changed) process.exitCode = 2;
-        return;
-      }
-
-      const local = collectBundle([inPath]);
-      const remote = await fetchResources(new GrafanaClient(ctx), resources);
-      const result: Record<string, DiffItem[]> = {};
-
-      for (const resource of resources) {
-        if (resource === "policies") {
-          const localHash = hashObject(local.policies || {});
-          const remoteHash = hashObject(remote.policies || {});
-          result[resource] = localHash === remoteHash ? [] : [{ key: "policies", change: "changed" }];
-          continue;
-        }
-
-        const localData = resourceItems(local, resource);
-        const remoteData = resourceItems(remote, resource);
-        result[resource] = diffArray(resource, localData || [], remoteData || []);
-      }
-
-      if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
-        return;
-      }
-
-      let total = 0;
-      for (const resource of resources) {
-        const items = result[resource] || [];
-        total += items.length;
-        const added = items.filter((v) => v.change === "added").length;
-        const removed = items.filter((v) => v.change === "removed").length;
-        const changed = items.filter((v) => v.change === "changed").length;
-        printMessage(ctx, `${resource}: +${added} -${removed} ~${changed} (total ${items.length})`);
-        for (const line of items.slice(0, 20)) {
-          printMessage(ctx, `  ${line.change.padEnd(7)} ${line.key}`);
-        }
-        if (items.length > 20) {
-          printMessage(ctx, `  ... ${items.length - 20} more`);
-        }
-      }
-
-      if (total === 0) printMessage(ctx, "No diff.");
-      else process.exitCode = 2;
-    });
-
-  program
-    .command("query <resource>")
-    .description("Query a single resource from remote Grafana or local export")
-    .option("-i, --in <target>", "optional local source path (directory or json file), default is remote")
-    .option("--id <id>", "resource id selector")
-    .option("--uid <uid>", "resource uid selector")
-    .option("--match-name <name>", "resource name selector")
-    .option("--title <title>", "resource title selector")
-    .option("-w, --where <expr>", "filter path=value, repeatable", collectList, [])
-    .option("--path <path>", "value path (dot / [index])")
-    .option("--json", "print as json (default for objects)")
-    .action(async function queryAction(resourceArg: string, options) {
-      const ctx = parseCommonOptions(this as unknown as Command, { requireUrl: !options.in });
-      const resource = parseResourceAlias(resourceArg);
-      if (!resource) throw new Error(`Unsupported resource: ${resourceArg}`);
-
-      const selector: ResourceSelector = ResourceSelectorSchema.parse({
-        id: options.id,
-        uid: options.uid,
-        name: options.matchName,
-        title: options.title,
-        where: options.where || [],
-      });
-
-      let items: unknown[] = [];
-      if (options.in) {
-        const localBundle = collectBundle([path.resolve(options.in)], resource);
-        items = resourceItems(localBundle, resource);
-      } else {
-        const remoteBundle = await fetchResources(new GrafanaClient(ctx), [resource]);
-        items = resourceItems(remoteBundle, resource);
-      }
-
-      const item = selectResource(items, resource, selector, false);
-      const value = getPathValue(item, options.path);
-      if (options.json || typeof value === "object") {
-        console.log(JSON.stringify(value, null, 2));
-      } else {
-        console.log(String(value ?? ""));
-      }
-    });
-
-  program
-    .command("render-panel")
-    .description("Render a dashboard panel image to a local PNG file")
-    .requiredOption("--dashboard-uid <uid>", "dashboard uid")
-    .requiredOption("--panel-id <id>", "panel id")
-    .option("-o, --out <file>", "output PNG file", "local/panel.png")
-    .option("--from <from>", "time range start", "now-6h")
-    .option("--to <to>", "time range end", "now")
-    .option("--width <px>", "render width", "1600")
-    .option("--height <px>", "render height", "900")
-    .option("--tz <timezone>", "timezone", "UTC")
-    .option("--theme <theme>", "light|dark", "light")
-    .option("--var <expr>", "template variable key=value, repeatable", collectList, [])
-    .action(async function renderPanelAction(options) {
-      const ctx = parseCommonOptions(this as unknown as Command);
-      const parsed = RenderPanelOptionsSchema.parse({
-        dashboardUid: String(options.dashboardUid || "").trim(),
-        panelId: parsePositiveInt(options.panelId, 1),
-        out: path.resolve(options.out),
-        from: String(options.from || "now-6h").trim(),
-        to: String(options.to || "now").trim(),
-        width: parsePositiveInt(options.width, 1600),
-        height: parsePositiveInt(options.height, 900),
-        tz: String(options.tz || "UTC").trim(),
-        theme: String(options.theme || "light").trim(),
-        vars: options.var || [],
-      });
-
-      const renderPath = buildRenderPanelPath(parsed);
-
-      if (ctx.dryRun) {
-        printData(ctx, "dry-run", {
-          action: "render-panel",
-          dashboardUid: parsed.dashboardUid,
-          panelId: parsed.panelId,
-          renderPath,
-          out: parsed.out,
-          message: `[DRY-RUN] render panel ${parsed.dashboardUid}:${parsed.panelId} -> ${parsed.out}`,
-        });
-        return;
-      }
-
-      const client = new GrafanaClient(ctx);
-      const image = await client.requestBytes("GET", renderPath, [200]);
-      ensureDir(path.dirname(parsed.out));
-      fs.writeFileSync(parsed.out, Buffer.from(image));
-
-      printData(ctx, "render-complete", {
-        dashboardUid: parsed.dashboardUid,
-        panelId: parsed.panelId,
-        out: parsed.out,
-        size: image.length,
-        message: `Rendered panel image: ${parsed.out} (${image.length} bytes)`,
-      });
-    });
-
-  program
-    .command("patch <resource>")
-    .description("Patch a single remote resource with path/value updates")
-    .option("--id <id>", "resource id selector")
-    .option("--uid <uid>", "resource uid selector")
-    .option("--match-name <name>", "resource name selector")
-    .option("--title <title>", "resource title selector")
-    .option("-w, --where <expr>", "filter path=value, repeatable", collectList, [])
-    .option("--path <path>", "default path for value-only --set")
-    .option("-s, --set <expr>", "patch expression path=value, repeatable", collectList, [])
-    .option("--merge <json>", "deep merge JSON object into selected resource")
-    .option("--from <file>", "replace selected resource with this JSON file content")
-    .option("--json", "print patched json")
-    .action(async function patchAction(resourceArg: string, options) {
-      const ctx = parseCommonOptions(this as unknown as Command);
-      const resource = parseResourceAlias(resourceArg);
-      if (!resource) throw new Error(`Unsupported resource: ${resourceArg}`);
-
-      const selector: ResourceSelector = ResourceSelectorSchema.parse({
-        id: options.id,
-        uid: options.uid,
-        name: options.matchName,
-        title: options.title,
-        where: options.where || [],
-      });
-
-      const remoteBundle = await fetchResources(new GrafanaClient(ctx), [resource]);
-      const current = selectResource(resourceItems(remoteBundle, resource), resource, selector, false);
-      let updated: unknown = JSON.parse(JSON.stringify(current));
-
-      if (options.from) {
-        const fromFile = path.resolve(options.from);
-        updated = JSON.parse(fs.readFileSync(fromFile, "utf8"));
-      }
-
-      if (options.merge) {
-        const patchObj = parseJsonLike(options.merge);
-        if (!patchObj || typeof patchObj !== "object" || Array.isArray(patchObj)) {
-          throw new Error("--merge requires a JSON object");
-        }
-        updated = deepMerge(updated, patchObj);
-      }
-
-      const setExprs = options.set || [];
-      for (const expr of setExprs) {
-        const { path: setPath, value } = parseSetExpr(expr, options.path);
-        if (!setPath) throw new Error(`Invalid --set expression: ${expr}`);
-        if (!updated || typeof updated !== "object" || Array.isArray(updated)) {
-          throw new Error("Patch target must be a JSON object");
-        }
-        setPathValue(updated as Record<string, unknown>, setPath, value);
-      }
-
-      if (setExprs.length === 0 && !options.merge && !options.from) {
-        throw new Error("No patch operation provided. Use --set, --merge, or --from.");
-      }
-
-      const out = createEmptyBundle();
-      out.resources = [resource];
-      setSingleResource(out, resource, updated);
-      await importResources(ctx, out, [resource]);
-
-      if (options.json || ctx.dryRun) {
-        console.log(JSON.stringify(updated, null, 2));
-      }
-      printMessage(ctx, `Patched ${resource}.`);
-      if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
-    });
-
-  program
-    .command("delete <resource>")
-    .description("Delete a single remote resource")
-    .option("--id <id>", "resource id selector")
-    .option("--uid <uid>", "resource uid selector")
-    .option("--match-name <name>", "resource name selector")
-    .option("--title <title>", "resource title selector")
-    .option("-w, --where <expr>", "filter path=value, repeatable", collectList, [])
-    .option("--json", "print selected resource json")
-    .action(async function deleteAction(resourceArg: string, options) {
-      const ctx = parseCommonOptions(this as unknown as Command);
-      const resource = parseResourceAlias(resourceArg);
-      if (!resource) throw new Error(`Unsupported resource: ${resourceArg}`);
-
-      const selector: ResourceSelector = ResourceSelectorSchema.parse({
-        id: options.id,
-        uid: options.uid,
-        name: options.matchName,
-        title: options.title,
-        where: options.where || [],
-      });
-
-      const selected = await deleteSingleResource(ctx, resource, selector);
-      if (options.json || ctx.dryRun) {
-        console.log(JSON.stringify(selected, null, 2));
-      }
-      printMessage(ctx, `Deleted ${resource}.`);
-      if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
-    });
-
-  const scopedResources: Array<{ cmd: string; resource: ResourceName }> = [
-    { cmd: "dashboard", resource: "dashboards" },
-    { cmd: "connection", resource: "datasources" },
-    { cmd: "folder", resource: "folders" },
-    { cmd: "alert-rule", resource: "alert-rules" },
-    { cmd: "contact-point", resource: "contact-points" },
-    { cmd: "policy", resource: "policies" },
-  ];
-
-  for (const entry of scopedResources) {
-    const scoped = program.command(entry.cmd).description(`Resource scoped operations for ${entry.cmd}`);
-    scoped
-      .command("delete <idOrUid>")
-      .description(`Delete ${entry.cmd} by id or uid`)
-      .option("--json", "print selected resource json")
-      .action(async function scopedDeleteAction(idOrUid: string, options) {
-        const ctx = parseCommonOptions(this as unknown as Command);
-        const selector = parseIdOrUidSelector(idOrUid);
-        const selected = await deleteSingleResource(ctx, entry.resource, selector);
-        if (options.json || ctx.dryRun) {
-          console.log(JSON.stringify(selected, null, 2));
-        }
-        printMessage(ctx, `Deleted ${entry.resource}.`);
-        if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
-      });
+  for (const command of buildMutateCommands(app)) {
+    program.addCommand(command);
   }
 
   await program.parseAsync(process.argv);
@@ -1712,6 +1675,17 @@ export const __test__ = {
   parseSetExpr,
   parseRenderVar,
   buildRenderPanelPath,
+  parseSkipPanelIds,
+  parseVarAssignments,
+  parseQueryAssignment,
+  detectQueryMode,
+  resolveQueryDatasourceIdentifier,
+  normalizeRenderTarget,
+  resolveTimeToMs,
+  msToInterval,
+  extractTemplatingValues,
+  resolveTemplateString,
+  resolveDatasourceUid,
   pathSegments,
   getPathValue,
   setPathValue,
