@@ -1,5 +1,88 @@
 import type { GrafanaCliContext } from "./schema";
 
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+type QueryParams = Record<string, string | number | boolean | null | undefined>;
+type ResponseMode = "auto" | "bytes";
+
+type RequestInput<I, P extends QueryParams> = {
+  name?: string;
+  fetch?: typeof globalThis.fetch;
+  baseUrl?: string;
+  url: string;
+  method?: HttpMethod;
+  headers?: HeadersInit;
+  body?: I;
+  params?: P;
+  timeoutMs?: number;
+  parseAs?: ResponseMode;
+};
+
+type RequestResult<O> = {
+  status: number;
+  headers: Headers;
+  data: O | string | Uint8Array;
+};
+
+function withQueryParams(url: string, params?: QueryParams): string {
+  if (!params || Object.keys(params).length === 0) return url;
+  const target = new URL(url, "http://local");
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    target.searchParams.set(key, String(value));
+  }
+  return target.origin === "http://local" ? `${target.pathname}${target.search}` : target.toString();
+}
+
+export async function request<O = unknown, I = unknown, P extends QueryParams = QueryParams>(
+  input: RequestInput<I, P>,
+): Promise<RequestResult<O>> {
+  const fetcher = input.fetch ?? globalThis.fetch;
+  const method = input.method ?? "GET";
+  const parseAs = input.parseAs ?? "auto";
+  const timeoutMs = input.timeoutMs ?? 20_000;
+
+  const baseUrl = input.baseUrl?.replace(/\/+$/, "") || "";
+  const rawUrl = input.url.startsWith("http") ? input.url : `${baseUrl}${input.url}`;
+  const targetUrl = withQueryParams(rawUrl, input.params);
+
+  const headers = new Headers(input.headers);
+  if (input.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetcher(targetUrl, {
+      method,
+      headers,
+      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+      signal: controller.signal,
+    });
+
+    if (parseAs === "bytes") {
+      const buffer = await response.arrayBuffer();
+      return {
+        status: response.status,
+        headers: response.headers,
+        data: new Uint8Array(buffer),
+      };
+    }
+
+    const text = await response.text();
+    const contentType = response.headers.get("content-type") || "";
+    const data = contentType.includes("application/json") && text ? (JSON.parse(text) as O) : text;
+
+    return {
+      status: response.status,
+      headers: response.headers,
+      data,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class GrafanaClient {
   readonly url: string;
   readonly apiKey?: string;
@@ -14,71 +97,72 @@ export class GrafanaClient {
   }
 
   async request<T = unknown>(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: HttpMethod,
     apiPath: string,
     body?: unknown,
     expected: number[] = [200],
   ): Promise<T> {
-    const url = apiPath.startsWith("http") ? apiPath : `${this.url}${apiPath}`;
-    const headers = new Headers({ Accept: "application/json" });
-    if (this.apiKey) headers.set("Authorization", `Bearer ${this.apiKey}`);
-    if (body !== undefined) headers.set("Content-Type", "application/json");
+    const result = await request<T, unknown>({
+      name: "grafana-request",
+      baseUrl: this.url,
+      url: apiPath,
+      method,
+      headers: {
+        Accept: "application/json",
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      body,
+      timeoutMs: this.timeoutMs,
+    });
+    if (this.debug) console.log(`[DEBUG] ${method} ${this.url}${apiPath}`);
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      if (this.debug) console.log(`[DEBUG] ${method} ${url}`);
-      const response = await fetch(url, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      const text = await response.text();
-      const contentType = response.headers.get("content-type") || "";
-      const data = contentType.includes("application/json") && text ? JSON.parse(text) : text;
-
-      if (!expected.includes(response.status)) {
-        const message = typeof data === "string" ? data : JSON.stringify(data);
-        throw new Error(`${response.status} ${method} ${apiPath}: ${message}`);
-      }
-
-      return data as T;
-    } finally {
-      clearTimeout(timer);
+    if (!expected.includes(result.status)) {
+      const message = typeof result.data === "string" ? result.data : JSON.stringify(result.data);
+      throw new Error(`${result.status} ${method} ${apiPath}: ${message}`);
     }
+    return result.data as T;
   }
 
-  async requestBytes(
-    method: "GET" | "POST" | "PUT" | "DELETE",
+  async requestWithStatus<T = unknown>(
+    method: HttpMethod,
     apiPath: string,
-    expected: number[] = [200],
-  ): Promise<Uint8Array> {
-    const url = apiPath.startsWith("http") ? apiPath : `${this.url}${apiPath}`;
-    const headers = new Headers({ Accept: "*/*" });
-    if (this.apiKey) headers.set("Authorization", `Bearer ${this.apiKey}`);
+    body?: unknown,
+  ): Promise<{ status: number; data: T | string }> {
+    const result = await request<T, unknown>({
+      name: "grafana-request-with-status",
+      baseUrl: this.url,
+      url: apiPath,
+      method,
+      headers: {
+        Accept: "application/json",
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      body,
+      timeoutMs: this.timeoutMs,
+    });
+    if (this.debug) console.log(`[DEBUG] ${method} ${this.url}${apiPath}`);
+    return { status: result.status, data: result.data as T | string };
+  }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      if (this.debug) console.log(`[DEBUG] ${method} ${url}`);
-      const response = await fetch(url, {
-        method,
-        headers,
-        signal: controller.signal,
-      });
+  async requestBytes(method: HttpMethod, apiPath: string, expected: number[] = [200]): Promise<Uint8Array> {
+    const result = await request<Uint8Array, undefined>({
+      name: "grafana-request-bytes",
+      baseUrl: this.url,
+      url: apiPath,
+      method,
+      headers: {
+        Accept: "*/*",
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      timeoutMs: this.timeoutMs,
+      parseAs: "bytes",
+    });
+    if (this.debug) console.log(`[DEBUG] ${method} ${this.url}${apiPath}`);
 
-      if (!expected.includes(response.status)) {
-        const text = await response.text();
-        throw new Error(`${response.status} ${method} ${apiPath}: ${text}`);
-      }
-
-      const buffer = await response.arrayBuffer();
-      return new Uint8Array(buffer);
-    } finally {
-      clearTimeout(timer);
+    if (!expected.includes(result.status)) {
+      throw new Error(`${result.status} ${method} ${apiPath}: unexpected status`);
     }
+    return result.data as Uint8Array;
   }
 }
 

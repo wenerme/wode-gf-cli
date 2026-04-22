@@ -50,6 +50,7 @@ build/
 .agents/docs/
 .claude/
 .codex/
+.opencode/
 
 ### Workspace
 .mcp-cli.json

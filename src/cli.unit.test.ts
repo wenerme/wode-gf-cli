@@ -30,6 +30,23 @@ describe("cli internal unit tests", () => {
     );
   });
 
+  it("extracts custom $__all values from query fallback", () => {
+    const vars = __test__.extractTemplatingValues({
+      templating: {
+        list: [
+          {
+            name: "env",
+            type: "custom",
+            query: "prod,staging,dev",
+            options: [],
+            current: { value: "$__all" },
+          },
+        ],
+      },
+    });
+    expect(vars.env).toEqual(["prod", "staging", "dev"]);
+  });
+
   it("supports where/set expressions", () => {
     expect(__test__.parseWhereExpr("a.b=1")).toEqual({ path: "a.b", value: 1 });
     expect(__test__.parseSetExpr('title="abc"')).toEqual({ path: "title", value: "abc" });
@@ -52,6 +69,101 @@ describe("cli internal unit tests", () => {
     expect(renderPath).toContain("/render/d-solo/abc123/_");
     expect(renderPath).toContain("panelId=7");
     expect(renderPath).toContain("var-env=prod");
+  });
+
+  it("parses validate options helpers", () => {
+    const envRef = "$" + "{env}";
+    const envPipeRef = "$" + "{env:pipe}";
+    const envCsvRef = "$" + "{env:csv}";
+    const envSingleQuoteRef = "$" + "{env:singlequote}";
+    const envDoubleQuoteRef = "$" + "{env:doublequote}";
+    const dsRef = "$" + "{ds}";
+    const childRef = "$" + "{child}";
+    expect(__test__.parseSkipPanelIds("1,2,2,3")).toEqual([1, 2, 3]);
+    expect(__test__.parseVarAssignments(["env=prod", "region=ap"]).env).toBe("prod");
+    expect(__test__.resolveTemplateString(`${envRef}-$__from`, { env: "prod", __from: "1000" })).toBe(
+      "prod-1000",
+    );
+    expect(__test__.resolveTemplateString(envPipeRef, { env: ["gpt-4", "kimi-k2.5"] })).toBe(
+      "gpt-4|kimi-k2.5",
+    );
+    expect(__test__.resolveTemplateString(envCsvRef, { env: ["gpt-4", "kimi-k2.5"] })).toBe(
+      "gpt-4,kimi-k2.5",
+    );
+    expect(__test__.resolveTemplateString(envSingleQuoteRef, { env: ["gpt-4", "kimi-k2.5"] })).toBe(
+      "'gpt-4','kimi-k2.5'",
+    );
+    expect(__test__.resolveTemplateString(envSingleQuoteRef, { env: "gpt-4" })).toBe("'gpt-4'");
+    expect(__test__.resolveTemplateString(envDoubleQuoteRef, { env: ["gpt-4", "kimi-k2.5"] })).toBe(
+      '"gpt-4","kimi-k2.5"',
+    );
+    expect(__test__.resolveDatasourceUid(dsRef, undefined, { ds: "pg-main" })).toBe("pg-main");
+    expect(__test__.resolveDatasourceUid("-- Mixed --", childRef, { child: "pg-replica" })).toBe(
+      "pg-replica",
+    );
+    expect(__test__.resolveTemplateString("$__from::bigint", { __from: "1700000000000" })).toBe(
+      "1700000000000::bigint",
+    );
+    const intervalRef = "$" + "{__interval_ms}";
+    const timeFromRef = "$" + "{__timeFrom}";
+    const timeFilterRef = "$" + "{__timeFilter}";
+    expect(__test__.resolveTemplateString(`${intervalRef} millisecond`, { __interval_ms: "60000" })).toBe(
+      "60000 millisecond",
+    );
+    expect(__test__.resolveTemplateString(`${timeFromRef}`, { __timeFrom: "to_timestamp(1700000000)" })).toBe(
+      "to_timestamp(1700000000)",
+    );
+    expect(
+      __test__.resolveTemplateString(`WHERE ${timeFilterRef}`, {
+        __timeFilter: '"time" BETWEEN to_timestamp(1700000000) AND to_timestamp(1700003600)',
+      }),
+    ).toBe('WHERE "time" BETWEEN to_timestamp(1700000000) AND to_timestamp(1700003600)');
+    expect(
+      __test__.resolveTemplateString("WHERE $__timeFilter(ts)", {
+        __timeFrom: "to_timestamp(1700000000)",
+        __timeTo: "to_timestamp(1700003600)",
+      }),
+    ).toBe('WHERE "ts" BETWEEN to_timestamp(1700000000) AND to_timestamp(1700003600)');
+    expect(
+      __test__.resolveTemplateString("to_char($__timeFrom()::date, 'YYYYMMDD')", {
+        __timeFrom: "to_timestamp(1700000000)",
+      }),
+    ).toBe("to_char(to_timestamp(1700000000)::date, 'YYYYMMDD')");
+  });
+
+  it("detects query mode and resolves datasource identifier", () => {
+    const flags1 = __test__.detectQueryMode("dashboard", { query: [] });
+    expect(flags1.isQuickQueryMode).toBe(false);
+    expect(flags1.resourceAlias).toBe("dashboards");
+
+    const flags2 = __test__.detectQueryMode("my-ds", { sql: "select 1", query: [] });
+    expect(flags2.isQuickQueryMode).toBe(true);
+    expect(__test__.resolveQueryDatasourceIdentifier("my-ds", {}, flags2)).toBe("my-ds");
+
+    const flags3 = __test__.detectQueryMode("dashboard", { sql: "select 1", query: [] });
+    expect(() => __test__.resolveQueryDatasourceIdentifier("dashboard", {}, flags3)).toThrow(
+      "conflicts with datasource query mode",
+    );
+  });
+
+  it("normalizes render target", () => {
+    expect(__test__.normalizeRenderTarget("panel")).toBe("panel");
+    expect(__test__.normalizeRenderTarget("dashboard")).toBe("dashboard");
+    expect(() => __test__.normalizeRenderTarget("dash")).toThrow("Unsupported render target");
+  });
+
+  it("parses query assignment and resolves relative time", () => {
+    expect(__test__.parseQueryAssignment("logServiceParams.SyntaxRule=1")).toEqual({
+      path: "logServiceParams.SyntaxRule",
+      value: 1,
+    });
+    const now = 1_700_000_000_000;
+    expect(__test__.resolveTimeToMs("now", now)).toBe(now);
+    expect(__test__.resolveTimeToMs("now-1h", now)).toBe(now - 3_600_000);
+    expect(__test__.resolveTimeToMs("1700000000", now)).toBe(1_700_000_000_000);
+    expect(__test__.msToInterval(60_000)).toBe("1m");
+    expect(__test__.msToInterval(3_600_000)).toBe("1h");
+    expect(__test__.msToInterval(86_400_000)).toBe("1d");
   });
 
   it("gets and sets nested path values", () => {

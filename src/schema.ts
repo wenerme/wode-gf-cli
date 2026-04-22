@@ -76,3 +76,15 @@ export const RenderPanelOptionsSchema = z.object({
   vars: z.array(z.string()).default([]),
 });
 export type RenderPanelOptions = z.infer<typeof RenderPanelOptionsSchema>;
+
+export const ValidateOptionsSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+  timeoutMs: z.number().int().min(1000),
+  intervalMs: z.number().int().min(1000),
+  concurrency: z.number().int().min(1).max(32),
+  skipPanelIds: z.array(z.number().int().positive()),
+  failFast: z.boolean(),
+  vars: z.array(z.string()),
+});
+export type ValidateOptions = z.infer<typeof ValidateOptionsSchema>;
