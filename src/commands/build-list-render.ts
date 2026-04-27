@@ -32,7 +32,7 @@ export function buildListAndRenderCommands(app: CommandAppContext) {
 
   const listCommand = new Command("list")
     .argument("<resource>", "resource to list")
-    .description("List remote resources quickly for discovery")
+    .description("List remote resources for discovery")
     .option("--folder <folderUid>", "filter dashboards by folder uid")
     .option("--json", "print full list as json")
     .action(async function listAction(resourceArg: string, options) {
@@ -94,7 +94,7 @@ export function buildListAndRenderCommands(app: CommandAppContext) {
 
   const renderCommand = new Command("render")
     .argument("<target>", "panel|dashboard")
-    .description("Render image: target=panel|dashboard (requires Grafana image renderer plugin)")
+    .description("Render panel or dashboard PNG (requires Grafana image renderer plugin)")
     .requiredOption("--dashboard-uid <uid>", "dashboard uid")
     .option("-o, --out <file>", "output PNG file", "local/panel.png")
     .option("--from <from>", "time range start", "now-6h")

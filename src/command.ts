@@ -1,51 +1,99 @@
-import { Command } from "commander";
+import { Command, type Help } from "commander";
 
-function buildHelpText(cliName: string): string {
-  return `
-Common workflows:
+function formatRows(rows: Array<[string, string]>): string {
+  const width = rows.reduce((max, [term]) => Math.max(max, term.length), 0);
+  return rows.map(([term, description]) => `${term.padEnd(width)}  ${description}`).join("\n");
+}
 
-  # dump/pull from remote to local workspace
-  ${cliName} --name local export -o local/grafana-export
+function buildTopHelpText(cliName: string): string {
+  return `QUICK START
+${cliName} --name local list dashboard
+${cliName} --name local export -o local/grafana-export
+${cliName} --name local query dashboard --uid <uid> --json
+${cliName} --name local query my-sql --sql 'select 1'
 
-  # local edit a single resource file
-  ${cliName} query dashboard --uid <uid> --json > local/dashboard.json
-  $EDITOR local/dashboard.json
+DISCOVER
+${formatRows([
+  ["list", "list dashboards / folders / connections"],
+  ["query", "inspect one resource, or run datasource queries"],
+  ["export", "pull remote resources into local split JSON"],
+])}
 
-  # import a single json file (auto infer by payload, or set --type)
-  ${cliName} --name local import local/dashboard.json
-  ${cliName} --name local import local/resource.json --type dashboard
+REVIEW
+${formatRows([
+  ["diff", "compare local export with current Grafana"],
+  ["validate", "validate dashboard queries via /api/ds/query"],
+  ["render", "render panel or dashboard PNG"],
+])}
 
-  # diff local workspace against remote
-  ${cliName} --name local --output json diff -i local/grafana-export
+CHANGE
+${formatRows([
+  ["import", "apply local JSON files/directories to Grafana"],
+  ["patch", "patch one remote resource with path=value updates"],
+  ["delete", "delete one remote resource"],
+])}
 
-  # validate dashboard queries against Grafana datasource query API
-  ${cliName} --name local validate ./grafana --concurrency 4
+RESOURCE COMMANDS
+${formatRows([
+  ["dashboard / dash", "list | search <TERM> | get <ID> | delete <ID>"],
+  ["connection / conn", "list | search <TERM> | get <ID> | delete <ID>"],
+  ["folder", "get <ID> | delete <ID>"],
+  ["alert-rule", "get <ID> | delete <ID>"],
+  ["contact-point", "get <ID> | delete <ID>"],
+  ["policy", "get <ID> | delete <ID>"],
+])}`;
+}
 
-  # quick datasource queries (uid or name)
-  ${cliName} --name local query my-sql --sql 'select 1'
-  ${cliName} --name local query my-cls --query 'serviceType=logService' --query 'logServiceParams.Query=* | select trace_id limit 1' --query 'logServiceParams.TopicId=my-topic-id' --query 'logServiceParams.region=ap-shanghai' --query 'logServiceParams.SyntaxRule=1'
-  ${cliName} --name local query my-prom --expr 'up'
-  ${cliName} --name local query my-cls --query-file ./local/cls-query.json --json
+function buildBottomHelpText(cliName: string): string {
+  return `PATTERN
+${formatRows([
+  ["command", `${cliName} <command> [args] [--name <profile>] [--output text|json] [--dry-run]`],
+  ["resource", `${cliName} <resource> <action> [args]`],
+  ["example", `${cliName} query dashboard --uid <uid> --name local --json`],
+])}
 
-  # quick list for discovery
-  ${cliName} --name local list dashboard
-  ${cliName} --name local list connection --json
+EXAMPLES
+${cliName} --name local diff -i local/grafana-export --json
+${cliName} --name local validate ./grafana --concurrency 4
+${cliName} --name local render panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
+${cliName} --name local --dry-run import local/grafana-export
+${cliName} dashboard delete <uid>
 
-  # query parameter modes
-  --sql / --expr              quick path for common datasource query fields
-  --query path=value          patch queries[0] fields (repeatable)
-  --query-json / --query-file full query object passthrough (--query-file - for stdin)
+QUERY MODES
+${formatRows([
+  ["--sql / --expr", "quick path for common datasource query fields"],
+  ["--query path=value", "patch queries[0] fields (repeatable)"],
+  ["--query-json / --query-file", "full query object passthrough (--query-file - for stdin)"],
+])}
 
-  # render dashboard panel / dashboard image
-  ${cliName} --name local render panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
-  ${cliName} --name local render dashboard --dashboard-uid <uid> -o local/dashboard.png
-  ${cliName} --name my-prod render panel --dashboard-uid <uid> --panel-id 1 --render-timeout 90000 -o local/panel.png
-  # note: render requires Grafana image renderer plugin on target Grafana
+MORE HELP
+${cliName} <command> --help
+${cliName} query --help
+${cliName} dashboard --help`;
+}
 
-  # push workflow: apply local changes to remote (use dry-run first)
-  ${cliName} --name local --dry-run import local/grafana-export
-  ${cliName} --name local import local/grafana-export
-`;
+function buildOptionsText(program: Command, helper: Help): string {
+  return formatRows(
+    helper
+      .visibleOptions(program)
+      .map((option) => [helper.optionTerm(option), helper.optionDescription(option)]),
+  );
+}
+
+function buildRootHelpInformation(program: Command, cliName: string): string {
+  const helper = program.createHelp();
+  const description = program.description();
+  return [
+    `Usage: ${helper.commandUsage(program)}`,
+    description,
+    buildTopHelpText(cliName),
+    "Options:",
+    buildOptionsText(program, helper),
+    buildBottomHelpText(cliName),
+    "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function createCommand(cliName: string) {
@@ -56,7 +104,9 @@ export function createCommand(cliName: string) {
   };
 
   program
-    .description("Grafana resource tool (export/import/validate/diff/query/patch/delete/render)")
+    .description("Grafana resource tool for discover/export/diff/import/query/render")
+    .showSuggestionAfterError(true)
+    .showHelpAfterError()
     .option("-n, --name <name>", "profile name, e.g. prod -> PROD_GRAFANA_URL/SERVICE_ACCOUNT_TOKEN")
     .option("--url <url>", "Grafana URL")
     .option("--service-account-token <token>", "Grafana service account token")
@@ -66,6 +116,9 @@ export function createCommand(cliName: string) {
     .option("-q, --quiet", "hide text progress logs")
     .option("--debug", "debug HTTP requests");
 
-  program.addHelpText("after", buildHelpText(cliName));
+  program.helpInformation = function rootHelpInformation() {
+    return buildRootHelpInformation(this, cliName);
+  };
+
   return { program, collectList };
 }
