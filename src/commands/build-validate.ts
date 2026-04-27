@@ -10,7 +10,7 @@ export function buildValidateCommand(app: CommandAppContext) {
 
   return new Command("validate")
     .argument("[sources...]", "source files/directories")
-    .description("Validate dashboard panel queries by calling Grafana /api/ds/query")
+    .description("Validate dashboard queries via Grafana /api/ds/query")
     .option("--skip-panel-ids <ids>", "comma-separated panel ids to skip")
     .option("--from <time>", "query time start", "now-1h")
     .option("--to <time>", "query time end", "now")

@@ -437,8 +437,8 @@ function parseResourceAlias(value: string | undefined): ResourceName | undefined
   if (!value) return undefined;
   const v = value.trim().toLowerCase();
   if (!v) return undefined;
-  if (v === "dashboard" || v === "dashboards") return "dashboards";
-  if (v === "connection" || v === "connections" || v === "datasource" || v === "datasources")
+  if (v === "dashboard" || v === "dashboards" || v === "dash") return "dashboards";
+  if (v === "connection" || v === "connections" || v === "conn" || v === "datasource" || v === "datasources")
     return "datasources";
   if (v === "folder" || v === "folders") return "folders";
   if (v === "alert-rule" || v === "alert-rules" || v === "alertrule" || v === "alertrules")

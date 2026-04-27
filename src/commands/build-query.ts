@@ -31,7 +31,7 @@ export function buildQueryCommand(app: CommandAppContext) {
 
   return new Command("query")
     .argument("<resourceOrDatasource>", "resource alias or datasource uid/name")
-    .description("Query a single resource from remote Grafana or local export")
+    .description("Inspect one resource, or run quick datasource queries")
     .option("-i, --in <target>", "optional local source path (directory or json file), default is remote")
     .option("--id <id>", "resource id selector")
     .option("--uid <uid>", "resource uid selector")

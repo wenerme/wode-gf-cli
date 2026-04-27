@@ -2,8 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { GrafanaClient } from "../client";
+import { asObjectArray, asString, getObjectField } from "../lib/json-narrow";
 import { type ResourceName, type ResourceSelector, ResourceSelectorSchema } from "../schema";
 import type { CommandAppContext } from "./runtime";
+
+type JsonObject = Record<string, unknown>;
 
 export function buildMutateCommands(app: CommandAppContext) {
   const {
@@ -22,6 +25,7 @@ export function buildMutateCommands(app: CommandAppContext) {
       setSingleResource,
       importResources,
       printMessage,
+      rowsToTable,
       deleteSingleResource,
       parseIdOrUidSelector,
     },
@@ -29,7 +33,7 @@ export function buildMutateCommands(app: CommandAppContext) {
 
   const patchCommand = new Command("patch")
     .argument("<resource>", "resource to patch")
-    .description("Patch a single remote resource with path/value updates")
+    .description("Patch one remote resource with path/value updates")
     .option("--id <id>", "resource id selector")
     .option("--uid <uid>", "resource uid selector")
     .option("--match-name <name>", "resource name selector")
@@ -98,7 +102,7 @@ export function buildMutateCommands(app: CommandAppContext) {
 
   const deleteCommand = new Command("delete")
     .argument("<resource>", "resource to delete")
-    .description("Delete a single remote resource")
+    .description("Delete one remote resource")
     .option("--id <id>", "resource id selector")
     .option("--uid <uid>", "resource uid selector")
     .option("--match-name <name>", "resource name selector")
@@ -126,20 +130,237 @@ export function buildMutateCommands(app: CommandAppContext) {
       if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
     });
 
-  const scopedResources: Array<{ cmd: string; resource: ResourceName }> = [
-    { cmd: "dashboard", resource: "dashboards" },
-    { cmd: "connection", resource: "datasources" },
-    { cmd: "folder", resource: "folders" },
-    { cmd: "alert-rule", resource: "alert-rules" },
-    { cmd: "contact-point", resource: "contact-points" },
-    { cmd: "policy", resource: "policies" },
+  const scopedResources: Array<{
+    cmd: string;
+    aliases?: string[];
+    resource: ResourceName;
+    description: string;
+  }> = [
+    {
+      cmd: "dashboard",
+      aliases: ["dash"],
+      resource: "dashboards",
+      description: "manage dashboards (list/search/get/delete)",
+    },
+    {
+      cmd: "connection",
+      aliases: ["conn"],
+      resource: "datasources",
+      description: "manage connections (list/search/get/delete)",
+    },
+    {
+      cmd: "folder",
+      resource: "folders",
+      description: "manage folders (get/delete)",
+    },
+    {
+      cmd: "alert-rule",
+      resource: "alert-rules",
+      description: "manage alert rules (get/delete)",
+    },
+    {
+      cmd: "contact-point",
+      resource: "contact-points",
+      description: "manage contact points (get/delete)",
+    },
+    { cmd: "policy", resource: "policies", description: "manage policies (get/delete)" },
   ];
 
   const scopedCommands: Command[] = [];
   for (const entry of scopedResources) {
-    const scoped = new Command(entry.cmd).description(`Resource scoped operations for ${entry.cmd}`);
+    const scoped = new Command(entry.cmd).description(entry.description);
+    for (const alias of entry.aliases || []) {
+      scoped.alias(alias);
+    }
+
+    if (entry.resource === "dashboards") {
+      scoped
+        .command("list")
+        .description("List dashboards")
+        .option("--folder <folderUid>", "filter dashboards by folder uid")
+        .option("--json", "print full list as json")
+        .action(async function dashboardListAction(options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const remote = await fetchResources(new GrafanaClient(ctx), ["dashboards", "folders"]);
+          let items = asObjectArray(resourceItems(remote, "dashboards"));
+
+          const folderMap = new Map<string, string>();
+          for (const folder of asObjectArray(remote.folders)) {
+            const uid = asString(folder.uid);
+            const title = asString(folder.title);
+            if (uid && title) folderMap.set(uid, title);
+          }
+
+          if (options.folder) {
+            const folderUid = String(options.folder).trim();
+            items = items.filter((item) => asString(item.folderUid) === folderUid);
+          }
+
+          const rows = items.map((item) => {
+            const dashboard = getObjectField(item, "dashboard");
+            const uid = asString(item.uid) || asString(dashboard?.uid) || "";
+            const label = asString(item.title) || asString(dashboard?.title) || "";
+            const folderUid = asString(item.folderUid) || null;
+            return {
+              uid,
+              label,
+              folder: folderUid ? folderMap.get(folderUid) || folderUid : undefined,
+              raw: item as JsonObject,
+            };
+          });
+
+          if (options.json || ctx.output === "json") {
+            console.log(
+              JSON.stringify(
+                rows.map((row) => row.raw),
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+          printMessage(ctx, rowsToTable(rows));
+        });
+
+      scoped
+        .command("search <TERM>")
+        .description("Search dashboards by uid/title/folder")
+        .option("--json", "print matched dashboards as json")
+        .action(async function dashboardSearchAction(term: string, options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const remote = await fetchResources(new GrafanaClient(ctx), ["dashboards", "folders"]);
+          const items = asObjectArray(resourceItems(remote, "dashboards"));
+
+          const folderMap = new Map<string, string>();
+          for (const folder of asObjectArray(remote.folders)) {
+            const uid = asString(folder.uid);
+            const title = asString(folder.title);
+            if (uid && title) folderMap.set(uid, title);
+          }
+
+          const query = term.trim().toLowerCase();
+          const rows = items
+            .map((item) => {
+              const dashboard = getObjectField(item, "dashboard");
+              const uid = asString(item.uid) || asString(dashboard?.uid) || "";
+              const label = asString(item.title) || asString(dashboard?.title) || "";
+              const folderUid = asString(item.folderUid) || null;
+              const folder = folderUid ? folderMap.get(folderUid) || folderUid : undefined;
+              return {
+                uid,
+                label,
+                folder,
+                raw: item as JsonObject,
+              };
+            })
+            .filter((row) => {
+              return [row.uid, row.label, row.folder || ""].some((value) =>
+                value.toLowerCase().includes(query),
+              );
+            });
+
+          if (options.json || ctx.output === "json") {
+            console.log(
+              JSON.stringify(
+                rows.map((row) => row.raw),
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+          printMessage(ctx, rowsToTable(rows));
+        });
+    }
+
+    if (entry.resource === "datasources") {
+      scoped
+        .command("list")
+        .description("List connections")
+        .option("--json", "print full list as json")
+        .action(async function datasourceListAction(options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const remote = await fetchResources(new GrafanaClient(ctx), ["datasources"]);
+          const items = asObjectArray(resourceItems(remote, "datasources"));
+          const rows = items.map((item) => {
+            const uid = asString(item.uid) || "";
+            const name = asString(item.name) || uid;
+            const type = asString(item.type);
+            return {
+              uid,
+              label: type ? `${name} (${type})` : name,
+              raw: item as JsonObject,
+            };
+          });
+
+          if (options.json || ctx.output === "json") {
+            console.log(
+              JSON.stringify(
+                rows.map((row) => row.raw),
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+          printMessage(ctx, rowsToTable(rows));
+        });
+
+      scoped
+        .command("search <TERM>")
+        .description("Search connections by uid/name/type")
+        .option("--json", "print matched connections as json")
+        .action(async function datasourceSearchAction(term: string, options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const remote = await fetchResources(new GrafanaClient(ctx), ["datasources"]);
+          const query = term.trim().toLowerCase();
+          const rows = asObjectArray(resourceItems(remote, "datasources"))
+            .map((item) => {
+              const uid = asString(item.uid) || "";
+              const name = asString(item.name) || uid;
+              const type = asString(item.type) || "";
+              return {
+                uid,
+                label: type ? `${name} (${type})` : name,
+                raw: item as JsonObject,
+                searchable: [uid, name, type],
+              };
+            })
+            .filter((row) => row.searchable.some((value) => value.toLowerCase().includes(query)))
+            .map(({ searchable: _searchable, ...row }) => row);
+
+          if (options.json || ctx.output === "json") {
+            console.log(
+              JSON.stringify(
+                rows.map((row) => row.raw),
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+          printMessage(ctx, rowsToTable(rows));
+        });
+    }
+
     scoped
-      .command("delete <idOrUid>")
+      .command("get <ID>")
+      .description(`Get ${entry.cmd} by id or uid as JSON`)
+      .action(async function scopedGetAction(idOrUid: string) {
+        const ctx = parseCommonOptions(this as unknown as Command);
+        const selector = parseIdOrUidSelector(idOrUid);
+        const remote = await fetchResources(new GrafanaClient(ctx), [entry.resource]);
+        const selected = selectResource(
+          resourceItems(remote, entry.resource),
+          entry.resource,
+          selector,
+          false,
+        );
+        console.log(JSON.stringify(selected, null, 2));
+      });
+
+    scoped
+      .command("delete <ID>")
       .description(`Delete ${entry.cmd} by id or uid`)
       .option("--json", "print selected resource json")
       .action(async function scopedDeleteAction(idOrUid: string, options) {

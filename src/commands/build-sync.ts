@@ -26,7 +26,7 @@ export function buildSyncCommands(app: CommandAppContext) {
   } = runtime;
 
   const exportCommand = new Command("export")
-    .description("Export Grafana resources to local json files")
+    .description("Export remote Grafana resources into local split JSON files")
     .option("-o, --out <dir>", "output directory", "./grafana-export")
     .option(
       "-r, --resources <list>",
@@ -52,7 +52,7 @@ export function buildSyncCommands(app: CommandAppContext) {
 
   const importCommand = new Command("import")
     .argument("[sources...]", "source files/directories")
-    .description("Import resources from local json files/directories to Grafana")
+    .description("Apply local JSON files/directories to remote Grafana")
     .option(
       "-r, --resources <list>",
       "comma-separated resources: dashboards,datasources,folders,alert-rules,contact-points,policies",
@@ -88,7 +88,7 @@ export function buildSyncCommands(app: CommandAppContext) {
     });
 
   const diffCommand = new Command("diff")
-    .description("Diff local exported resources against current Grafana")
+    .description("Compare local export with current remote Grafana")
     .option("-i, --in <dir>", "input directory", "./grafana-export")
     .option(
       "-r, --resources <list>",
