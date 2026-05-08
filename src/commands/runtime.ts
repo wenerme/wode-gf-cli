@@ -7,10 +7,12 @@ type JsonObject = Record<string, unknown>;
 export type CliContext = {
   url: string;
   apiKey?: string;
+  username?: string;
+  password?: string;
   timeoutMs: number;
   dryRun: boolean;
   debug: boolean;
-  profile?: string;
+  contextName?: string;
   output: "text" | "json";
   quiet: boolean;
 };
@@ -36,13 +38,20 @@ export type DiffItem = {
 
 export type CliRuntime = {
   parseCommonOptions: (cmd: Command, cfg?: { requireUrl?: boolean }) => CliContext;
+  getConfigPath: () => string;
+  readCliConfig: () => { context: string; contexts: Array<Record<string, string>> };
   parseResources: (value?: string) => ResourceName[];
   parseResourceAlias: (value: string | undefined) => ResourceName | undefined;
   dedupeResources: (resources: ResourceName[]) => ResourceName[];
   collectBundle: (sources: string[], forcedResource?: ResourceName) => ExportBundle;
   fetchResources: (client: GrafanaClient, resources: ResourceName[]) => Promise<ExportBundle>;
   bundleToFiles: (outDir: string, bundle: ExportBundle, pretty: boolean) => void;
-  importResources: (ctx: CliContext, bundle: ExportBundle, resources: ResourceName[]) => Promise<void>;
+  importResources: (
+    ctx: CliContext,
+    bundle: ExportBundle,
+    resources: ResourceName[],
+    options?: { overwrite?: boolean },
+  ) => Promise<void>;
   resourceItems: (bundle: ExportBundle, resource: ResourceName) => unknown[];
   selectResource: (
     items: unknown[],
@@ -57,6 +66,7 @@ export type CliRuntime = {
   printMessage: (ctx: CliContext, message: string) => void;
   printData: (ctx: CliContext, type: string, data: Record<string, unknown>) => void;
   rowsToTable: (rows: Array<{ uid: string; label: string; folder?: string; raw: JsonObject }>) => string;
+  renderTable: (headers: string[], rows: string[][]) => string;
   normalizeRenderTarget: (target: string) => "panel" | "dashboard";
   ensureDir: (dir: string) => void;
   detectQueryMode: (
@@ -89,6 +99,7 @@ export type CliRuntime = {
       concurrency: number;
       failFast: boolean;
       skipPanelIds: number[];
+      onlyPanelIds?: number[];
       vars: Record<string, string>;
     },
   ) => Promise<{ errors: ValidateIssue[]; warnings: ValidateIssue[] }>;
@@ -97,6 +108,7 @@ export type CliRuntime = {
   parseSetExpr: (expr: string, defaultPath?: string) => { path: string; value: unknown };
   createEmptyBundle: () => ExportBundle;
   setSingleResource: (bundle: ExportBundle, resource: ResourceName, item: unknown) => void;
+  writeJson: (file: string, data: unknown, pretty?: boolean) => void;
   deleteSingleResource: (
     ctx: CliContext,
     resource: ResourceName,

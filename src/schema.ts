@@ -17,16 +17,33 @@ export type ResourceName = z.infer<typeof ResourceNameSchema>;
 export const GrafanaCliContextSchema = z.object({
   url: z.string(),
   apiKey: z.string().optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
   timeoutMs: z.number().int().min(1000),
   dryRun: z.boolean(),
   debug: z.boolean(),
-  profile: z.string().optional(),
+  contextName: z.string().optional(),
 });
 export type GrafanaCliContext = z.infer<typeof GrafanaCliContextSchema>;
 
+export const CliConfigContextSchema = z.object({
+  name: z.string().min(1),
+  baseUrl: z.string().optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+  serviceAccountToken: z.string().optional(),
+});
+export type CliConfigContext = z.infer<typeof CliConfigContextSchema>;
+
+export const CliConfigSchema = z.object({
+  context: z.string().min(1).default("default"),
+  contexts: z.array(CliConfigContextSchema).default([]),
+});
+export type CliConfig = z.infer<typeof CliConfigSchema>;
+
 export const ExportBundleSchema = z.object({
   generatedAt: z.string(),
-  profile: z.string().optional(),
+  context: z.string().optional(),
   url: z.string(),
   resources: z.array(ResourceNameSchema),
   folders: z.array(z.unknown()).optional(),

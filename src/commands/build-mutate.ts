@@ -2,11 +2,157 @@ import fs from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { GrafanaClient } from "../client";
-import { asObjectArray, asString, getObjectField } from "../lib/json-narrow";
-import { type ResourceName, type ResourceSelector, ResourceSelectorSchema } from "../schema";
-import type { CommandAppContext } from "./runtime";
+import { asObject, asObjectArray, asString, getObjectField } from "../lib/json-narrow";
+import { CliName, type ResourceName, type ResourceSelector, ResourceSelectorSchema } from "../schema";
+import { parsePositiveInt } from "../utils";
+import type { CliContext, CommandAppContext } from "./runtime";
 
 type JsonObject = Record<string, unknown>;
+type ResourceRow = {
+  uid: string;
+  label: string;
+  folder?: string;
+  raw: JsonObject;
+};
+
+type FolderNode = {
+  uid: string;
+  title: string;
+  parentUid?: string;
+  raw: JsonObject;
+};
+
+function printResourceRows(
+  ctx: CliContext,
+  rows: ResourceRow[],
+  options: { json?: boolean },
+  rowsToTable: (rows: ResourceRow[]) => string,
+  printMessage: (ctx: CliContext, message: string) => void,
+) {
+  if (options.json || ctx.output === "json") {
+    console.log(
+      JSON.stringify(
+        rows.map((row) => row.raw),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  printMessage(ctx, rowsToTable(rows));
+}
+
+function buildFolderMap(folders: unknown): Map<string, string> {
+  const folderMap = new Map<string, string>();
+  for (const folder of asObjectArray(folders)) {
+    const uid = asString(folder.uid);
+    const title = asString(folder.title);
+    if (uid && title) folderMap.set(uid, title);
+  }
+  return folderMap;
+}
+
+function buildFolderNodes(folders: unknown): FolderNode[] {
+  return asObjectArray(folders)
+    .map((folder) => {
+      const uid = asString(folder.uid);
+      const title = asString(folder.title);
+      if (!uid || !title) return undefined;
+      return {
+        uid,
+        title,
+        parentUid: asString(folder.parentUid),
+        raw: folder,
+      } satisfies FolderNode;
+    })
+    .filter((node): node is FolderNode => Boolean(node));
+}
+
+function renderFolderTree(folders: unknown): string {
+  const nodes = buildFolderNodes(folders);
+  if (nodes.length === 0) return "";
+
+  const byParent = new Map<string, FolderNode[]>();
+  for (const node of nodes) {
+    const key = node.parentUid || "__root__";
+    const list = byParent.get(key) || [];
+    list.push(node);
+    byParent.set(key, list);
+  }
+  for (const list of byParent.values()) {
+    list.sort((a, b) => a.title.localeCompare(b.title) || a.uid.localeCompare(b.uid));
+  }
+
+  const lines: string[] = [];
+  const visit = (parentUid: string | undefined, depth: number) => {
+    const key = parentUid || "__root__";
+    for (const node of byParent.get(key) || []) {
+      lines.push(`${"  ".repeat(depth)}- ${node.title} [${node.uid}]`);
+      visit(node.uid, depth + 1);
+    }
+  };
+
+  visit(undefined, 0);
+
+  const missingRoots = nodes
+    .filter((node) => node.parentUid && !nodes.some((candidate) => candidate.uid === node.parentUid))
+    .sort((a, b) => a.title.localeCompare(b.title) || a.uid.localeCompare(b.uid));
+  for (const node of missingRoots) {
+    if (lines.some((line) => line.endsWith(`[${node.uid}]`))) continue;
+    lines.push(`- ${node.title} [${node.uid}]`);
+    visit(node.uid, 1);
+  }
+
+  return lines.join("\n");
+}
+
+function buildTokenSelectors(resource: ResourceName, token: string): ResourceSelector[] {
+  const selectors: ResourceSelector[] = [];
+  if (/^\d+$/.test(token)) {
+    selectors.push(ResourceSelectorSchema.parse({ id: token, uid: token, where: [] }));
+  } else {
+    selectors.push(ResourceSelectorSchema.parse({ uid: token, where: [] }));
+  }
+
+  if (resource === "folders" || resource === "dashboards" || resource === "alert-rules") {
+    selectors.push(ResourceSelectorSchema.parse({ title: token, where: [] }));
+  }
+  if (resource === "datasources" || resource === "contact-points") {
+    selectors.push(ResourceSelectorSchema.parse({ name: token, where: [] }));
+  }
+  return selectors;
+}
+
+function selectResourceByToken(
+  items: unknown[],
+  resource: ResourceName,
+  token: string,
+  selectResource: (
+    items: unknown[],
+    resource: ResourceName,
+    selector: ResourceSelector,
+    allowMissing?: boolean,
+  ) => unknown | undefined,
+): unknown {
+  const trimmed = token.trim();
+  if (!trimmed) throw new Error("Missing selector token");
+
+  let lastNoMatch: Error | undefined;
+  for (const selector of buildTokenSelectors(resource, trimmed)) {
+    try {
+      return selectResource(items, resource, selector, false);
+    } catch (error) {
+      const err = error as Error;
+      if (err.message === `No ${resource} matched selector`) {
+        lastNoMatch = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastNoMatch || new Error(`No ${resource} matched selector`);
+}
 
 export function buildMutateCommands(app: CommandAppContext) {
   const {
@@ -25,7 +171,9 @@ export function buildMutateCommands(app: CommandAppContext) {
       setSingleResource,
       importResources,
       printMessage,
+      printData,
       rowsToTable,
+      renderTable,
       deleteSingleResource,
       parseIdOrUidSelector,
     },
@@ -130,6 +278,46 @@ export function buildMutateCommands(app: CommandAppContext) {
       if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
     });
 
+  const userCommand = new Command("user").description("list Grafana users");
+  userCommand
+    .command("list")
+    .description("List users")
+    .option("--search <TERM>", "filter users by login/name/email")
+    .option("--page <N>", "page number", "1")
+    .option("--limit <N>", "page size", "100")
+    .option("--json", "print full user list as json")
+    .action(async function userListAction(options) {
+      const ctx = parseCommonOptions(this as unknown as Command);
+      const client = new GrafanaClient(ctx);
+      const page = parsePositiveInt(options.page, 1);
+      const limit = parsePositiveInt(options.limit, 100);
+      const search = String(options.search || "").trim();
+      const apiPath = `/api/users/search?perpage=${limit}&page=${page}${search ? `&query=${encodeURIComponent(search)}` : ""}`;
+      const result = asObject(await client.request<unknown>("GET", apiPath));
+      const users = asObjectArray(result?.users);
+
+      if (options.json || ctx.output === "json") {
+        console.log(JSON.stringify(users, null, 2));
+        return;
+      }
+
+      const rows = users.map((user) => [
+        String(user.id ?? ""),
+        asString(user.login) || "",
+        asString(user.name) || asString(user.displayName) || "",
+        asString(user.email) || "",
+        user.isAdmin === true || user.isGrafanaAdmin === true
+          ? "yes"
+          : user.isAdmin === false || user.isGrafanaAdmin === false
+            ? "no"
+            : "",
+      ]);
+      const totalCount = typeof result?.totalCount === "number" ? result.totalCount : undefined;
+      const table = renderTable(["id", "login", "name", "email", "admin"], rows);
+      const summary = `Page ${page}, limit ${limit}${typeof totalCount === "number" ? `, total ${totalCount}` : ""}`;
+      printMessage(ctx, [table, summary].filter(Boolean).join("\n\n"));
+    });
+
   const scopedResources: Array<{
     cmd: string;
     aliases?: string[];
@@ -138,9 +326,9 @@ export function buildMutateCommands(app: CommandAppContext) {
   }> = [
     {
       cmd: "dashboard",
-      aliases: ["dash"],
+      aliases: ["dash", "d"],
       resource: "dashboards",
-      description: "manage dashboards (list/search/get/delete)",
+      description: "manage dashboards (list/search/get/move/delete)",
     },
     {
       cmd: "connection",
@@ -151,7 +339,7 @@ export function buildMutateCommands(app: CommandAppContext) {
     {
       cmd: "folder",
       resource: "folders",
-      description: "manage folders (get/delete)",
+      description: "manage folders (list/search/get/create/rename/delete)",
     },
     {
       cmd: "alert-rule",
@@ -163,7 +351,7 @@ export function buildMutateCommands(app: CommandAppContext) {
       resource: "contact-points",
       description: "manage contact points (get/delete)",
     },
-    { cmd: "policy", resource: "policies", description: "manage policies (get/delete)" },
+    { cmd: "policy", resource: "policies", description: "manage policies (get)" },
   ];
 
   const scopedCommands: Command[] = [];
@@ -183,13 +371,7 @@ export function buildMutateCommands(app: CommandAppContext) {
           const ctx = parseCommonOptions(this as unknown as Command);
           const remote = await fetchResources(new GrafanaClient(ctx), ["dashboards", "folders"]);
           let items = asObjectArray(resourceItems(remote, "dashboards"));
-
-          const folderMap = new Map<string, string>();
-          for (const folder of asObjectArray(remote.folders)) {
-            const uid = asString(folder.uid);
-            const title = asString(folder.title);
-            if (uid && title) folderMap.set(uid, title);
-          }
+          const folderMap = buildFolderMap(remote.folders);
 
           if (options.folder) {
             const folderUid = String(options.folder).trim();
@@ -209,17 +391,7 @@ export function buildMutateCommands(app: CommandAppContext) {
             };
           });
 
-          if (options.json || ctx.output === "json") {
-            console.log(
-              JSON.stringify(
-                rows.map((row) => row.raw),
-                null,
-                2,
-              ),
-            );
-            return;
-          }
-          printMessage(ctx, rowsToTable(rows));
+          printResourceRows(ctx, rows, options, rowsToTable, printMessage);
         });
 
       scoped
@@ -230,14 +402,7 @@ export function buildMutateCommands(app: CommandAppContext) {
           const ctx = parseCommonOptions(this as unknown as Command);
           const remote = await fetchResources(new GrafanaClient(ctx), ["dashboards", "folders"]);
           const items = asObjectArray(resourceItems(remote, "dashboards"));
-
-          const folderMap = new Map<string, string>();
-          for (const folder of asObjectArray(remote.folders)) {
-            const uid = asString(folder.uid);
-            const title = asString(folder.title);
-            if (uid && title) folderMap.set(uid, title);
-          }
-
+          const folderMap = buildFolderMap(remote.folders);
           const query = term.trim().toLowerCase();
           const rows = items
             .map((item) => {
@@ -259,17 +424,88 @@ export function buildMutateCommands(app: CommandAppContext) {
               );
             });
 
-          if (options.json || ctx.output === "json") {
-            console.log(
-              JSON.stringify(
-                rows.map((row) => row.raw),
-                null,
-                2,
-              ),
-            );
+          printResourceRows(ctx, rows, options, rowsToTable, printMessage);
+        });
+
+      scoped
+        .command("move <ID> <FOLDER>")
+        .alias("mv")
+        .description("Move dashboard to another folder")
+        .option("--json", "print updated dashboard json")
+        .action(async function dashboardMoveAction(idOrUid: string, folderIdOrUid: string, options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const client = new GrafanaClient(ctx);
+          const remote = await fetchResources(client, ["dashboards", "folders"]);
+          const dashboard = asObject(
+            selectResource(
+              resourceItems(remote, "dashboards"),
+              "dashboards",
+              parseIdOrUidSelector(idOrUid),
+              false,
+            ),
+          );
+          const folder = asObject(
+            selectResource(
+              resourceItems(remote, "folders"),
+              "folders",
+              parseIdOrUidSelector(folderIdOrUid),
+              false,
+            ),
+          );
+
+          if (!dashboard) throw new Error("Selected dashboard is not a JSON object");
+          if (!folder) throw new Error("Selected folder is not a JSON object");
+
+          const dashboardBody = getObjectField(dashboard, "dashboard");
+          const dashboardUid = asString(dashboard.uid) || asString(dashboardBody?.uid) || "";
+          const dashboardTitle = asString(dashboard.title) || asString(dashboardBody?.title) || dashboardUid;
+          const currentFolderUid = asString(dashboard.folderUid) || "";
+          const targetFolderUid = asString(folder.uid);
+          const targetFolderTitle = asString(folder.title) || targetFolderUid || "(unknown)";
+          if (!dashboardBody) throw new Error("Selected dashboard has no dashboard payload");
+          if (!targetFolderUid) throw new Error("Selected folder has no uid");
+
+          const moved = {
+            ...dashboard,
+            folderUid: targetFolderUid,
+          };
+
+          if (currentFolderUid === targetFolderUid) {
+            if (options.json || ctx.output === "json") {
+              console.log(JSON.stringify(moved, null, 2));
+            }
+            printMessage(ctx, `Dashboard ${dashboardTitle} is already in folder ${targetFolderTitle}.`);
             return;
           }
-          printMessage(ctx, rowsToTable(rows));
+
+          const body = {
+            dashboard: {
+              ...dashboardBody,
+              id: null,
+            },
+            folderUid: targetFolderUid,
+            overwrite: true,
+            message: `moved by ${CliName}`,
+          };
+
+          if (ctx.dryRun) {
+            printData(ctx, "dry-run", {
+              resource: "dashboards",
+              action: "move",
+              uid: dashboardUid,
+              title: dashboardTitle,
+              fromFolderUid: currentFolderUid,
+              toFolderUid: targetFolderUid,
+              message: `[DRY-RUN] dashboard move ${dashboardUid || dashboardTitle} -> ${targetFolderUid}`,
+            });
+          } else {
+            await client.request("POST", "/api/dashboards/db", body, [200]);
+          }
+
+          if (options.json || ctx.output === "json" || ctx.dryRun) {
+            console.log(JSON.stringify(moved, null, 2));
+          }
+          printMessage(ctx, `Moved dashboard ${dashboardTitle} to folder ${targetFolderTitle}.`);
         });
     }
 
@@ -293,17 +529,7 @@ export function buildMutateCommands(app: CommandAppContext) {
             };
           });
 
-          if (options.json || ctx.output === "json") {
-            console.log(
-              JSON.stringify(
-                rows.map((row) => row.raw),
-                null,
-                2,
-              ),
-            );
-            return;
-          }
-          printMessage(ctx, rowsToTable(rows));
+          printResourceRows(ctx, rows, options, rowsToTable, printMessage);
         });
 
       scoped
@@ -329,17 +555,139 @@ export function buildMutateCommands(app: CommandAppContext) {
             .filter((row) => row.searchable.some((value) => value.toLowerCase().includes(query)))
             .map(({ searchable: _searchable, ...row }) => row);
 
-          if (options.json || ctx.output === "json") {
-            console.log(
-              JSON.stringify(
-                rows.map((row) => row.raw),
-                null,
-                2,
-              ),
-            );
+          printResourceRows(ctx, rows, options, rowsToTable, printMessage);
+        });
+    }
+
+    if (entry.resource === "folders") {
+      scoped
+        .command("list")
+        .description("List folders")
+        .option("--tree", "render folders as tree when parent info is available")
+        .option("--json", "print full list as json")
+        .action(async function folderListAction(options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const remote = await fetchResources(new GrafanaClient(ctx), ["folders"]);
+          if (options.tree && !(options.json || ctx.output === "json")) {
+            const tree = renderFolderTree(resourceItems(remote, "folders"));
+            printMessage(ctx, tree || "(no folders)");
             return;
           }
-          printMessage(ctx, rowsToTable(rows));
+
+          const rows = asObjectArray(resourceItems(remote, "folders")).map((item) => ({
+            uid: asString(item.uid) || "",
+            label: asString(item.title) || asString(item.uid) || "",
+            raw: item as JsonObject,
+          }));
+
+          printResourceRows(ctx, rows, options, rowsToTable, printMessage);
+        });
+
+      scoped
+        .command("search <TERM>")
+        .description("Search folders by uid/title")
+        .option("--json", "print matched folders as json")
+        .action(async function folderSearchAction(term: string, options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const remote = await fetchResources(new GrafanaClient(ctx), ["folders"]);
+          const query = term.trim().toLowerCase();
+          const rows = asObjectArray(resourceItems(remote, "folders"))
+            .map((item) => ({
+              uid: asString(item.uid) || "",
+              label: asString(item.title) || asString(item.uid) || "",
+              raw: item as JsonObject,
+            }))
+            .filter((row) => [row.uid, row.label].some((value) => value.toLowerCase().includes(query)));
+
+          printResourceRows(ctx, rows, options, rowsToTable, printMessage);
+        });
+
+      scoped
+        .command("create <TITLE>")
+        .description("Create folder")
+        .option("--uid <UID>", "explicit folder uid")
+        .option("--json", "print created folder json")
+        .action(async function folderCreateAction(titleArg: string, options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const client = new GrafanaClient(ctx);
+          const title = String(titleArg || "").trim();
+          const uid = asString(options.uid);
+          if (!title) throw new Error("Missing folder title");
+
+          const body = uid ? { title, uid } : { title };
+          if (ctx.dryRun) {
+            printData(ctx, "dry-run", {
+              resource: "folders",
+              action: "create",
+              uid,
+              title,
+              message: `[DRY-RUN] folder create ${uid || title}`,
+            });
+            if (options.json || ctx.output === "json") {
+              console.log(JSON.stringify(body, null, 2));
+            }
+            printMessage(ctx, `Create folder ${title}.`);
+            return;
+          }
+
+          const created = await client.request<unknown>("POST", "/api/folders", body, [200]);
+          if (options.json || ctx.output === "json") {
+            console.log(JSON.stringify(created, null, 2));
+          }
+          printMessage(ctx, `Created folder ${title}.`);
+        });
+
+      scoped
+        .command("rename <ID> <TITLE>")
+        .description("Rename folder")
+        .option("--json", "print updated folder json")
+        .action(async function folderRenameAction(idOrUid: string, titleArg: string, options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const client = new GrafanaClient(ctx);
+          const title = String(titleArg || "").trim();
+          if (!title) throw new Error("Missing folder title");
+
+          const remote = await fetchResources(client, ["folders"]);
+          const current = asObject(
+            selectResourceByToken(resourceItems(remote, "folders"), "folders", idOrUid, selectResource),
+          );
+          if (!current) throw new Error("Selected folder is not a JSON object");
+
+          const uid = asString(current.uid);
+          const previousTitle = asString(current.title) || uid || "(unknown)";
+          if (!uid) throw new Error("Selected folder has no uid");
+
+          const updated = {
+            ...current,
+            title,
+          };
+
+          if (previousTitle === title) {
+            if (options.json || ctx.output === "json") {
+              console.log(JSON.stringify(updated, null, 2));
+            }
+            printMessage(ctx, `Folder ${uid} is already named ${title}.`);
+            return;
+          }
+
+          const body = { uid, title };
+          if (ctx.dryRun) {
+            printData(ctx, "dry-run", {
+              resource: "folders",
+              action: "rename",
+              uid,
+              fromTitle: previousTitle,
+              toTitle: title,
+              message: `[DRY-RUN] folder rename ${uid} ${previousTitle} -> ${title}`,
+            });
+          } else {
+            await client.request("PUT", `/api/folders/${encodeURIComponent(uid)}`, body, [200]);
+          }
+
+          if (options.json || ctx.output === "json" || ctx.dryRun) {
+            console.log(JSON.stringify(updated, null, 2));
+          }
+          printMessage(ctx, `Renamed folder ${previousTitle} to ${title}.`);
         });
     }
 
@@ -348,33 +696,62 @@ export function buildMutateCommands(app: CommandAppContext) {
       .description(`Get ${entry.cmd} by id or uid as JSON`)
       .action(async function scopedGetAction(idOrUid: string) {
         const ctx = parseCommonOptions(this as unknown as Command);
-        const selector = parseIdOrUidSelector(idOrUid);
         const remote = await fetchResources(new GrafanaClient(ctx), [entry.resource]);
-        const selected = selectResource(
-          resourceItems(remote, entry.resource),
-          entry.resource,
-          selector,
-          false,
-        );
+        const selected =
+          entry.resource === "folders"
+            ? selectResourceByToken(
+                resourceItems(remote, entry.resource),
+                entry.resource,
+                idOrUid,
+                selectResource,
+              )
+            : selectResource(
+                resourceItems(remote, entry.resource),
+                entry.resource,
+                parseIdOrUidSelector(idOrUid),
+                false,
+              );
         console.log(JSON.stringify(selected, null, 2));
       });
 
-    scoped
-      .command("delete <ID>")
-      .description(`Delete ${entry.cmd} by id or uid`)
-      .option("--json", "print selected resource json")
-      .action(async function scopedDeleteAction(idOrUid: string, options) {
-        const ctx = parseCommonOptions(this as unknown as Command);
-        const selector = parseIdOrUidSelector(idOrUid);
-        const selected = await deleteSingleResource(ctx, entry.resource, selector);
-        if (options.json || ctx.dryRun) {
-          console.log(JSON.stringify(selected, null, 2));
-        }
-        printMessage(ctx, `Deleted ${entry.resource}.`);
-        if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
-      });
+    if (entry.resource !== "policies") {
+      scoped
+        .command("delete <ID>")
+        .description(`Delete ${entry.cmd} by id or uid`)
+        .option("--json", "print selected resource json")
+        .action(async function scopedDeleteAction(idOrUid: string, options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const selector = entry.resource === "folders" ? undefined : parseIdOrUidSelector(idOrUid);
+          const selected =
+            entry.resource === "folders"
+              ? await (async () => {
+                  const client = new GrafanaClient(ctx);
+                  const remote = await fetchResources(client, ["folders"]);
+                  const folder = selectResourceByToken(
+                    resourceItems(remote, "folders"),
+                    "folders",
+                    idOrUid,
+                    selectResource,
+                  );
+                  const folderObj = asObject(folder);
+                  const uid = asString(folderObj?.uid);
+                  if (!uid) throw new Error("Selected folder has no uid, cannot delete");
+                  return deleteSingleResource(
+                    ctx,
+                    "folders",
+                    ResourceSelectorSchema.parse({ uid, where: [] }),
+                  );
+                })()
+              : await deleteSingleResource(ctx, entry.resource, selector);
+          if (options.json || ctx.dryRun) {
+            console.log(JSON.stringify(selected, null, 2));
+          }
+          printMessage(ctx, `Deleted ${entry.resource}.`);
+          if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
+        });
+    }
     scopedCommands.push(scoped);
   }
 
-  return [patchCommand, deleteCommand, ...scopedCommands];
+  return [patchCommand, deleteCommand, userCommand, ...scopedCommands];
 }

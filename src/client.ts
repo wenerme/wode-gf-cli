@@ -86,12 +86,16 @@ export async function request<O = unknown, I = unknown, P extends QueryParams = 
 export class GrafanaClient {
   readonly url: string;
   readonly apiKey?: string;
+  readonly username?: string;
+  readonly password?: string;
   readonly timeoutMs: number;
   readonly debug: boolean;
 
   constructor(ctx: GrafanaCliContext) {
     this.url = ctx.url.replace(/\/+$/, "");
     this.apiKey = ctx.apiKey;
+    this.username = ctx.username;
+    this.password = ctx.password;
     this.timeoutMs = ctx.timeoutMs;
     this.debug = ctx.debug;
   }
@@ -109,7 +113,13 @@ export class GrafanaClient {
       method,
       headers: {
         Accept: "application/json",
-        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        ...(this.apiKey
+          ? { Authorization: `Bearer ${this.apiKey}` }
+          : this.username
+            ? {
+                Authorization: `Basic ${Buffer.from(`${this.username}:${this.password || ""}`).toString("base64")}`,
+              }
+            : {}),
       },
       body,
       timeoutMs: this.timeoutMs,
@@ -135,7 +145,13 @@ export class GrafanaClient {
       method,
       headers: {
         Accept: "application/json",
-        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        ...(this.apiKey
+          ? { Authorization: `Bearer ${this.apiKey}` }
+          : this.username
+            ? {
+                Authorization: `Basic ${Buffer.from(`${this.username}:${this.password || ""}`).toString("base64")}`,
+              }
+            : {}),
       },
       body,
       timeoutMs: this.timeoutMs,
@@ -152,7 +168,13 @@ export class GrafanaClient {
       method,
       headers: {
         Accept: "*/*",
-        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        ...(this.apiKey
+          ? { Authorization: `Bearer ${this.apiKey}` }
+          : this.username
+            ? {
+                Authorization: `Basic ${Buffer.from(`${this.username}:${this.password || ""}`).toString("base64")}`,
+              }
+            : {}),
       },
       timeoutMs: this.timeoutMs,
       parseAs: "bytes",

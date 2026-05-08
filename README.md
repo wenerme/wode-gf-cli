@@ -29,7 +29,7 @@ pnpm install
 pnpm run build
 ```
 
-Install built binary to `~/bin`:
+Install built binary locally:
 
 ```bash
 pnpm run install:bin
@@ -46,112 +46,157 @@ pnpm run check
 
 ## Configuration
 
-You can configure Grafana connection by CLI flags or environment variables.
+You can configure Grafana connection by context config, CLI flags, or environment variables.
+
+Config file:
+
+- `~/.wode/wode-gf-cli.yaml`
+
+Example:
+
+```yaml
+context: default
+contexts:
+  - name: default
+    baseUrl: http://127.0.0.1:3300
+    serviceAccountToken: glsa_xxx
+  - name: local
+    baseUrl: http://127.0.0.1:3300
+    username: admin
+    password: admin
+```
+
+Supported fields:
+
+- `name`
+- `baseUrl`
+- `serviceAccountToken`
+- `username`
+- `password`
+
+Base commands:
+
+```bash
+wode-gf-cli context list
+wode-gf-cli context current
+wode-gf-cli context use local
+wode-gf-cli context set baseUrl=http://127.0.0.1:3300
+wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --service-account-token <token>
+wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --username admin --password admin
+wode-gf-cli auth whoami --context local
+```
 
 Base env vars:
 
 ```bash
 GRAFANA_URL
 GRAFANA_SERVICE_ACCOUNT_TOKEN
+GRAFANA_USERNAME
+GRAFANA_PASSWORD
 ```
 
-Profile-based env vars (used with `--name <profile>`):
+Context-based env vars (`--context <name>`; `--name` is compatibility alias only):
 
 ```bash
-<PROFILE>_GRAFANA_URL
-<PROFILE>_GRAFANA_SERVICE_ACCOUNT_TOKEN
+<CONTEXT>_GRAFANA_URL
+<CONTEXT>_GRAFANA_SERVICE_ACCOUNT_TOKEN
+<CONTEXT>_GRAFANA_USERNAME
+<CONTEXT>_GRAFANA_PASSWORD
 ```
 
 Example:
 
 ```bash
-# PROFILE=LOCAL
-wode-gf-cli --name local export -o local/grafana-export
+# CONTEXT=LOCAL
+wode-gf-cli --context local export -o local/grafana-export
 
 # resolves LOCAL_GRAFANA_URL / LOCAL_GRAFANA_SERVICE_ACCOUNT_TOKEN
 ```
 
-Optional default profile:
+Optional default context:
 
 ```bash
-export WODE_GF_CLI_NAME=local
+export WODE_GF_CLI_CONTEXT=local
 wode-gf-cli export -o local/grafana-export
 ```
 
 Priority notes:
 
-- CLI flags override env values (`--url`, `--service-account-token`)
+- CLI flags override context / env values (`--url`, `--service-account-token`, `--username`, `--password`)
+- context config overrides env values
 - Shell env has higher priority than `.env` / `.env.local`
+- `--name` remains only as a compatibility alias; new docs use `context`
+- legacy config keys `profile` / `profiles` in `~/.wode/wode-gf-cli.yaml` are migrated to `context` / `contexts` automatically when read.
 
 ## Basic Workflow
 
 ```bash
 # 1) export current remote state
-wode-gf-cli --name <profile> export -o ./grafana-export
+wode-gf-cli --context <context> export -o ./grafana-export
 
 # 2) edit local JSON files
 
 # 3) validate and diff
-wode-gf-cli --name <profile> validate ./grafana-export
-wode-gf-cli --name <profile> diff -i ./grafana-export
+wode-gf-cli --context <context> validate ./grafana-export
+wode-gf-cli --context <context> diff -i ./grafana-export
 
 # 4) apply safely
-wode-gf-cli --name <profile> --dry-run import ./grafana-export
-wode-gf-cli --name <profile> import ./grafana-export
+wode-gf-cli --context <context> --dry-run import ./grafana-export
+wode-gf-cli --context <context> import ./grafana-export
 ```
 
 ## Common Workflow
 
 ```bash
 # pull/dump from remote
-wode-gf-cli --name local export -o local/grafana-export
+wode-gf-cli --context local export -o local/grafana-export
 
 # edit local JSON
-wode-gf-cli query dashboard --uid <uid> --json > local/dashboard.json
+wode-gf-cli --context local query dashboard --uid <uid> --json > local/dashboard.json
 $EDITOR local/dashboard.json
 
 # dry-run push
-wode-gf-cli --name local --dry-run import local/grafana-export
+wode-gf-cli --context local --dry-run import local/grafana-export
 
 # apply push
-wode-gf-cli --name local import local/grafana-export
+wode-gf-cli --context local import local/grafana-export
 
 # validate panel queries in dashboard JSON files
-wode-gf-cli --name local validate ./grafana --concurrency 4 --var env=prod
-wode-gf-cli --name local validate ./grafana --concurrency 2 --timeout 60000
-wode-gf-cli --name local validate ./grafana --interval-ms 60000
+wode-gf-cli --context local validate ./grafana --concurrency 4 --var env=prod
+wode-gf-cli --context local validate ./grafana --concurrency 2 --timeout 60000
+wode-gf-cli --context local validate ./grafana --interval-ms 60000
 
 # quick datasource queries (uid or name)
-wode-gf-cli --name local query xyz-mysql --sql 'select 1'
-wode-gf-cli --name local query my-prom --expr 'up'
-wode-gf-cli --name local query my-cls --query 'serviceType=logService' --query 'logServiceParams.Query=* | select trace_id limit 1' --query 'logServiceParams.TopicId=my-topic-id' --query 'logServiceParams.region=ap-shanghai' --query 'logServiceParams.SyntaxRule=1'
+wode-gf-cli --context local query xyz-mysql --sql 'select 1'
+wode-gf-cli --context local query my-prom --expr 'up'
+wode-gf-cli --context local query my-cls --query 'serviceType=logService' --query 'logServiceParams.Query=* | select trace_id limit 1' --query 'logServiceParams.TopicId=my-topic-id' --query 'logServiceParams.region=ap-shanghai' --query 'logServiceParams.SyntaxRule=1'
 
 # list resources quickly
-wode-gf-cli --name local list dashboard
-wode-gf-cli --name local list connection --json
+wode-gf-cli --context local list dashboard
+wode-gf-cli --context local list connection --json
 
 # full query object passthrough
-wode-gf-cli --name local query my-cls --query-file ./local/cls-query.json --json
+wode-gf-cli --context local query my-cls --query-file ./local/cls-query.json --json
 
 # read query object from stdin
-cat ./local/cls-query.json | wode-gf-cli --name local query my-cls --query-file - --json
+cat ./local/cls-query.json | wode-gf-cli --context local query my-cls --query-file - --json
 
 # render a panel image
-wode-gf-cli --name local render panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
+wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
 
 # render a dashboard image
-wode-gf-cli --name local render dashboard --dashboard-uid <uid> -o local/dashboard.png
+wode-gf-cli --context local render dashboard --dashboard-uid <uid> -o local/dashboard.png
 
 # slow Grafana render can increase timeout (default 60000ms)
-wode-gf-cli --name my-prod render panel --dashboard-uid <uid> --panel-id 1 --render-timeout 90000 -o local/panel.png
+wode-gf-cli --context my-prod render panel --dashboard-uid <uid> --panel-id 1 --render-timeout 90000 -o local/panel.png
 
 # note: render requires Grafana image renderer plugin on target Grafana
 ```
 
-You can set default profile via env:
+You can set default context via env:
 
 ```bash
-export WODE_GF_CLI_NAME=local
+export WODE_GF_CLI_CONTEXT=local
 wode-gf-cli export -o local/grafana-export
 ```
 
@@ -165,10 +210,10 @@ wode-gf-cli export -o local/grafana-export
 
 ```bash
 # auto-infer resource type
-wode-gf-cli --name local import local/single-dashboard.json
+wode-gf-cli --context local import local/single-dashboard.json
 
 # explicit type (recommended when ambiguous)
-wode-gf-cli --name local import local/resource.json --type dashboard
+wode-gf-cli --context local import local/resource.json --type dashboard
 ```
 
 Type resolution order:
