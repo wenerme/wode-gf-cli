@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { __test__ } from "./cli";
+import { parsePanelRef, replacePanelInDashboard } from "./commands/build-panel";
 
 describe("cli internal unit tests", () => {
   it("parses env file with export/quote/comment", () => {
@@ -28,6 +29,46 @@ describe("cli internal unit tests", () => {
     expect(__test__.inferResourceFromObject({ name: "d1", type: "testdata", access: "proxy" })).toBe(
       "datasources",
     );
+  });
+
+  it("parses resource aliases for dashboard/connection/folder/policy", () => {
+    expect(__test__.parseResourceAlias("dash")).toBe("dashboards");
+    expect(__test__.parseResourceAlias("d")).toBe("dashboards");
+    expect(__test__.parseResourceAlias("conn")).toBe("datasources");
+    expect(__test__.parseResourceAlias("folder")).toBe("folders");
+    expect(__test__.parseResourceAlias("policy")).toBe("policies");
+  });
+
+  it("parses simple yaml config", () => {
+    const parsed = __test__.parseSimpleYamlConfig(
+      [
+        "context: local",
+        "contexts:",
+        "  - name: default",
+        "    baseUrl: http://127.0.0.1:3300",
+        "  - name: local",
+        "    baseUrl: http://127.0.0.1:4300",
+        "    username: admin",
+        "    password: admin",
+        "    serviceAccountToken: glsa_xxx",
+      ].join("\n"),
+    );
+
+    expect(parsed.context).toBe("local");
+    expect(parsed.contexts[1]?.name).toBe("local");
+    expect(parsed.contexts[1]?.username).toBe("admin");
+    expect(parsed.contexts[1]?.serviceAccountToken).toBe("glsa_xxx");
+  });
+
+  it("migrates legacy profile keys to context keys", () => {
+    const migrated = __test__.migrateLegacyConfig(
+      ["profile: local", "profiles:", "  - name: local", "    baseUrl: http://127.0.0.1:3300"].join("\n"),
+    );
+
+    expect(migrated).toContain("context: local");
+    expect(migrated).toContain("contexts:");
+    expect(migrated).not.toContain("profile:");
+    expect(migrated).not.toContain("profiles:");
   });
 
   it("extracts custom $__all values from query fallback", () => {
@@ -170,6 +211,22 @@ describe("cli internal unit tests", () => {
     const target: Record<string, unknown> = {};
     __test__.setPathValue(target, "a.b[0].name", "alice");
     expect(__test__.getPathValue(target, "a.b[0].name")).toBe("alice");
+  });
+
+  it("parses panel refs and replaces nested panels", () => {
+    expect(parsePanelRef("dash-uid/12")).toEqual({ dashboard: "dash-uid", panelId: 12 });
+    expect(() => parsePanelRef("dash-uid")).toThrow("Panel ref must be DASH/PANEL");
+    expect(() => parsePanelRef("dash-uid/panel-a")).toThrow("numeric panel id");
+
+    const dashboard = {
+      panels: [
+        { id: 1, title: "A" },
+        { id: 2, title: "Row", panels: [{ id: 3, title: "Nested" }] },
+      ],
+    };
+    const updated = replacePanelInDashboard(dashboard, 3, { id: 3, title: "Next" });
+    expect(updated.panels[1].panels[0].title).toBe("Next");
+    expect(dashboard.panels[1].panels[0].title).toBe("Nested");
   });
 
   it("deep merges objects and replaces arrays", () => {

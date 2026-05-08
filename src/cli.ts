@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { Command } from "commander";
+import { Command } from "commander";
 import { GrafanaClient, mapLimit } from "./client";
 import { createCommand } from "./command";
 import { buildListAndRenderCommands } from "./commands/build-list-render";
 import { buildMutateCommands } from "./commands/build-mutate";
+import { buildPanelCommand } from "./commands/build-panel";
 import { buildQueryCommand } from "./commands/build-query";
 import { buildSyncCommands } from "./commands/build-sync";
 import { buildValidateCommand } from "./commands/build-validate";
@@ -19,6 +20,7 @@ import {
   type TemplateVars,
 } from "./lib/template-vars";
 import {
+  CliConfigSchema,
   CliName,
   DefaultResources,
   type DiffItem,
@@ -134,6 +136,138 @@ function envValue(keys: string[]) {
     const value = process.env[key];
     if (value?.trim()) return value.trim();
   }
+}
+
+function getConfigPath() {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (!home) return path.resolve(".wode/wode-gf-cli.yaml");
+  return path.join(home, ".wode", "wode-gf-cli.yaml");
+}
+
+function parseSimpleYamlConfig(content: string): {
+  context: string;
+  contexts: Array<Record<string, string>>;
+} {
+  const lines = content.split("\n");
+  const contexts: Array<Record<string, string>> = [];
+  let current: Record<string, string> | undefined;
+  let activeContext = "default";
+  let inContexts = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\t/g, "  ").trimEnd();
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    if (!rawLine.startsWith(" ") && trimmed.startsWith("context:")) {
+      activeContext = trimmed.slice("context:".length).trim() || "default";
+      inContexts = false;
+      current = undefined;
+      continue;
+    }
+    if (!rawLine.startsWith(" ") && trimmed === "contexts:") {
+      inContexts = true;
+      current = undefined;
+      continue;
+    }
+    if (!inContexts) continue;
+
+    if (trimmed.startsWith("- ")) {
+      current = {};
+      contexts.push(current);
+      const rest = trimmed.slice(2).trim();
+      if (rest) {
+        const index = rest.indexOf(":");
+        if (index > 0) current[rest.slice(0, index).trim()] = rest.slice(index + 1).trim();
+      }
+      continue;
+    }
+
+    if (!current) continue;
+    const index = trimmed.indexOf(":");
+    if (index <= 0) continue;
+    current[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
+  }
+
+  return CliConfigSchema.parse({ context: activeContext, contexts });
+}
+
+function migrateLegacyConfig(content: string): string {
+  return content.replace(/^profile:\s*/m, "context: ").replace(/^profiles:\s*$/m, "contexts:");
+}
+
+function readCliConfig() {
+  const file = getConfigPath();
+  try {
+    const content = fs.readFileSync(file, "utf8");
+    const migrated = migrateLegacyConfig(content);
+    const parsed = parseSimpleYamlConfig(migrated);
+    if (!parsed.contexts.some((ctx) => ctx.name === parsed.context)) {
+      parsed.contexts.push({ name: parsed.context });
+    }
+    if (migrated !== content) {
+      writeCliConfig(parsed);
+    }
+    return parsed;
+  } catch {
+    return CliConfigSchema.parse({ context: "default", contexts: [{ name: "default" }] });
+  }
+}
+
+function serializeCliConfig(config: { context: string; contexts: Array<Record<string, string>> }) {
+  const lines = [`context: ${config.context}`, "contexts:"];
+  const seen = new Set<string>();
+  for (const rawCtx of config.contexts) {
+    const name = String(rawCtx.name || "default").trim() || "default";
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const ctx: Record<string, string> = { ...rawCtx, name };
+    lines.push(`  - name: ${name}`);
+    for (const [key, value] of Object.entries(ctx)) {
+      if (key === "name") continue;
+      if (value === undefined || value === "") continue;
+      lines.push(`    ${key}: ${value}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function contextAuthType(ctx: Record<string, string>) {
+  const hasToken = Boolean(ctx.serviceAccountToken?.trim());
+  const hasBasic = Boolean(ctx.username?.trim()) || Boolean(ctx.password?.trim());
+  if (hasToken && hasBasic) return "token+basic";
+  if (hasToken) return "token";
+  if (hasBasic) return "basic";
+  return "none";
+}
+
+function formatContextView(
+  config: { context: string; contexts: Array<Record<string, string>> },
+  name: string,
+) {
+  const context = config.contexts.find((ctx) => ctx.name === name) || { name };
+  return {
+    name,
+    current: config.context === name,
+    baseUrl: context.baseUrl || null,
+    authType: contextAuthType(context),
+    serviceAccountTokenConfigured: Boolean(context.serviceAccountToken?.trim()),
+    username: context.username || null,
+    passwordConfigured: Boolean(context.password?.trim()),
+  };
+}
+
+function writeCliConfig(config: { context: string; contexts: Array<Record<string, string>> }) {
+  const file = getConfigPath();
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, serializeCliConfig(config), "utf8");
+}
+
+function getNamedContext(name: string | undefined) {
+  const config = readCliConfig();
+  const selectedName = name || config.context || "default";
+  const context = config.contexts.find((ctx) => ctx.name === selectedName);
+  return { config, context: context || { name: selectedName } };
 }
 
 function parseResources(value?: string): ResourceName[] {
@@ -322,7 +456,7 @@ function bundleToFiles(outDir: string, bundle: ExportBundle, pretty: boolean) {
       __type: "grafana-manifest",
       schemaVersion: 1,
       generatedAt: bundle.generatedAt,
-      profile: bundle.profile,
+      context: bundle.context,
       url: bundle.url,
       resources: bundle.resources,
       counts: {
@@ -437,7 +571,7 @@ function parseResourceAlias(value: string | undefined): ResourceName | undefined
   if (!value) return undefined;
   const v = value.trim().toLowerCase();
   if (!v) return undefined;
-  if (v === "dashboard" || v === "dashboards" || v === "dash") return "dashboards";
+  if (v === "dashboard" || v === "dashboards" || v === "dash" || v === "d") return "dashboards";
   if (v === "connection" || v === "connections" || v === "conn" || v === "datasource" || v === "datasources")
     return "datasources";
   if (v === "folder" || v === "folders") return "folders";
@@ -1108,6 +1242,7 @@ async function validateDashboards(
     concurrency: number;
     failFast: boolean;
     skipPanelIds: number[];
+    onlyPanelIds?: number[];
     vars: Record<string, string>;
   },
 ) {
@@ -1115,6 +1250,7 @@ async function validateDashboards(
   const errors: ValidateError[] = [];
   const client = new GrafanaClient({ ...ctx, timeoutMs: options.timeoutMs });
   const skipSet = new Set(options.skipPanelIds);
+  const onlySet = new Set(options.onlyPanelIds || []);
   const nowMs = Date.now();
   const fromMs = resolveTimeToMs(options.from, nowMs);
   const toMs = resolveTimeToMs(options.to, nowMs);
@@ -1154,6 +1290,7 @@ async function validateDashboards(
 
     await mapLimit(tasks, options.concurrency, async ({ panel, target }) => {
       const panelId = Number.parseInt(String(panel.id || "0"), 10) || 0;
+      if (onlySet.size > 0 && !onlySet.has(panelId)) return;
       if (skipSet.has(panelId)) {
         warnings.push({
           dashboardTitle,
@@ -1268,8 +1405,11 @@ function printData(ctx: RuntimeContext, type: string, data: Record<string, unkno
 function parseCommonOptions(cmd: Command, cfg?: { requireUrl?: boolean }): RuntimeContext {
   const options = cmd.optsWithGlobals() as {
     name?: string;
+    context?: string;
     url?: string;
     serviceAccountToken?: string;
+    username?: string;
+    password?: string;
     timeout?: string;
     dryRun?: boolean;
     debug?: boolean;
@@ -1277,30 +1417,63 @@ function parseCommonOptions(cmd: Command, cfg?: { requireUrl?: boolean }): Runti
     quiet?: boolean;
   };
 
-  const profile = options.name?.trim() || envValue(["WODE_GF_CLI_NAME"]);
-  const prefix = profile ? normalizePrefix(profile) : undefined;
+  const contextName =
+    options.context?.trim() || options.name?.trim() || envValue(["WODE_GF_CLI_CONTEXT", "WODE_GF_CLI_NAME"]);
+  if (options.name?.trim()) {
+    console.warn("[WARN] --name is deprecated; prefer --context");
+  }
+  if (!options.context?.trim() && !options.name?.trim() && process.env.WODE_GF_CLI_NAME?.trim()) {
+    console.warn("[WARN] WODE_GF_CLI_NAME is deprecated; prefer WODE_GF_CLI_CONTEXT");
+  }
+  const prefix = contextName ? normalizePrefix(contextName) : undefined;
+  const { context } = getNamedContext(contextName);
 
   const url =
     options.url ||
+    context.baseUrl ||
     envValue(
-      [prefix ? `${prefix}_GRAFANA_URL` : "", profile ? `${profile}_GRAFANA_URL` : "", "GRAFANA_URL"].filter(
-        Boolean,
-      ),
+      [
+        prefix ? `${prefix}_GRAFANA_URL` : "",
+        contextName ? `${contextName}_GRAFANA_URL` : "",
+        "GRAFANA_URL",
+      ].filter(Boolean),
     );
 
   const apiKey =
     options.serviceAccountToken ||
+    context.serviceAccountToken ||
     envValue(
       [
         prefix ? `${prefix}_GRAFANA_SERVICE_ACCOUNT_TOKEN` : "",
-        profile ? `${profile}_GRAFANA_SERVICE_ACCOUNT_TOKEN` : "",
+        contextName ? `${contextName}_GRAFANA_SERVICE_ACCOUNT_TOKEN` : "",
         "GRAFANA_SERVICE_ACCOUNT_TOKEN",
+      ].filter(Boolean),
+    );
+
+  const username =
+    options.username ||
+    context.username ||
+    envValue(
+      [
+        prefix ? `${prefix}_GRAFANA_USERNAME` : "",
+        contextName ? `${contextName}_GRAFANA_USERNAME` : "",
+        "GRAFANA_USERNAME",
+      ].filter(Boolean),
+    );
+  const password =
+    options.password ||
+    context.password ||
+    envValue(
+      [
+        prefix ? `${prefix}_GRAFANA_PASSWORD` : "",
+        contextName ? `${contextName}_GRAFANA_PASSWORD` : "",
+        "GRAFANA_PASSWORD",
       ].filter(Boolean),
     );
 
   const requireUrl = cfg?.requireUrl !== false;
   if (requireUrl && !url) {
-    throw new Error("Missing Grafana URL. Set GRAFANA_URL or NAME_GRAFANA_URL, or pass --url");
+    throw new Error("Missing Grafana URL. Set config/env/--url before running Grafana commands");
   }
 
   const timeoutMs = Math.max(1000, Number.parseInt(options.timeout || "20000", 10) || 20000);
@@ -1308,9 +1481,11 @@ function parseCommonOptions(cmd: Command, cfg?: { requireUrl?: boolean }): Runti
   const output: OutputFormat = options.output === "json" ? "json" : "text";
 
   const parsed = GrafanaCliContextSchema.parse({
-    profile,
+    contextName,
     url: url || "",
     apiKey,
+    username,
+    password,
     timeoutMs,
     dryRun: Boolean(options.dryRun),
     debug: Boolean(options.debug),
@@ -1323,7 +1498,13 @@ function parseCommonOptions(cmd: Command, cfg?: { requireUrl?: boolean }): Runti
   };
 }
 
-async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resources: ResourceName[]) {
+async function importResources(
+  ctx: RuntimeContext,
+  bundle: ExportBundle,
+  resources: ResourceName[],
+  options: { overwrite?: boolean } = {},
+) {
+  const overwrite = options.overwrite !== false;
   const client = new GrafanaClient(ctx);
 
   const has = (resource: ResourceName) => resources.includes(resource);
@@ -1426,7 +1607,7 @@ async function importResources(ctx: RuntimeContext, bundle: ExportBundle, resour
       const body = {
         dashboard: { ...cleaned, id: null },
         folderUid: asString(cleanItem.folderUid) || undefined,
-        overwrite: true,
+        overwrite,
         message: `imported by ${CliName}`,
       };
 
@@ -1610,6 +1791,8 @@ export async function run() {
   const { program, collectList } = createCommand(CliName);
   const runtime: CliRuntime = {
     parseCommonOptions,
+    getConfigPath,
+    readCliConfig,
     parseResources,
     parseResourceAlias,
     dedupeResources,
@@ -1626,6 +1809,7 @@ export async function run() {
     printMessage,
     printData,
     rowsToTable,
+    renderTable,
     normalizeRenderTarget,
     ensureDir,
     detectQueryMode,
@@ -1642,10 +1826,151 @@ export async function run() {
     parseSetExpr,
     createEmptyBundle,
     setSingleResource,
+    writeJson,
     deleteSingleResource,
     parseIdOrUidSelector,
   };
   const app: CommandAppContext = { collectList, runtime };
+
+  const contextCommand = new Command("context").description("show and manage named contexts");
+  contextCommand
+    .command("list")
+    .description("List contexts")
+    .option("--json", "print contexts as json")
+    .action(function contextListAction(options) {
+      const config = readCliConfig();
+      const contexts = config.contexts.map((ctx) => ({
+        current: ctx.name === config.context,
+        name: ctx.name || "default",
+        baseUrl: ctx.baseUrl || null,
+        authType: contextAuthType(ctx),
+      }));
+      if (options.json) {
+        console.log(JSON.stringify({ context: config.context, contexts }, null, 2));
+        return;
+      }
+      const rows = contexts.map((ctx) => [ctx.current ? "*" : "", ctx.name, ctx.baseUrl || "", ctx.authType]);
+      console.log(renderTable(["*", "name", "baseUrl", "auth"], rows));
+    });
+  contextCommand
+    .command("current")
+    .description("Show current context")
+    .option("--json", "print current context as json")
+    .action(function contextCurrentAction(options) {
+      const config = readCliConfig();
+      const view = formatContextView(config, config.context || "default");
+      if (options.json) {
+        console.log(JSON.stringify(view, null, 2));
+        return;
+      }
+      console.log(
+        [
+          `Name: ${view.name}`,
+          `Current: ${view.current ? "yes" : "no"}`,
+          `Base URL: ${view.baseUrl || "<none>"}`,
+          `Auth Type: ${view.authType}`,
+          `Service Account Token: ${view.serviceAccountTokenConfigured ? "<configured>" : "<none>"}`,
+          `Username: ${view.username || "<none>"}`,
+          `Password: ${view.passwordConfigured ? "<configured>" : "<none>"}`,
+        ].join("\n"),
+      );
+    });
+  contextCommand
+    .command("use <NAME>")
+    .description("Switch current context")
+    .action(function contextUseAction(name: string) {
+      const config = readCliConfig();
+      if (!config.contexts.some((ctx) => ctx.name === name)) {
+        config.contexts.push({ name });
+      }
+      config.context = name;
+      writeCliConfig(config);
+      console.log(`Using context ${name}`);
+    });
+  contextCommand
+    .command("set <EXPR>")
+    .description("Set context field, e.g. baseUrl=http://127.0.0.1:3300")
+    .option("--context <NAME>", "target context name")
+    .action(function contextSetAction(expr: string, options) {
+      const index = expr.indexOf("=");
+      if (index <= 0) throw new Error("Invalid context set expression, expect KEY=VALUE");
+      const key = expr.slice(0, index).trim();
+      const value = expr.slice(index + 1);
+      const config = readCliConfig();
+      const globalOptions = (this as unknown as Command).optsWithGlobals() as { context?: string };
+      const requestedName = String(
+        options.context || globalOptions.context || config.context || "default",
+      ).trim();
+      const name = requestedName || "default";
+      let ctx = config.contexts.find((item) => item.name === name);
+      if (!ctx) {
+        ctx = { name };
+        config.contexts.push(ctx);
+      }
+      ctx[key] = value;
+      writeCliConfig(config);
+      console.log(`Updated context ${name}: ${key}`);
+    });
+
+  const authCommand = new Command("auth").description("manage Grafana authentication");
+  authCommand
+    .command("login")
+    .description("Store auth credentials into a context")
+    .option("-c, --context <NAME>", "context name")
+    .option("--url <url>", "Grafana URL")
+    .option("--username <username>", "Grafana username")
+    .option("--password <password>", "Grafana password")
+    .option("--service-account-token <token>", "Grafana service account token")
+    .action(function authLoginAction(options) {
+      const config = readCliConfig();
+      const mergedOptions = (this as unknown as Command).optsWithGlobals() as {
+        context?: string;
+        url?: string;
+        username?: string;
+        password?: string;
+        serviceAccountToken?: string;
+      };
+      const requestedName = String(
+        options.context || mergedOptions.context || config.context || "default",
+      ).trim();
+      const name = requestedName || "default";
+      let ctx = config.contexts.find((item) => item.name === name);
+      if (!ctx) {
+        ctx = { name };
+        config.contexts.push(ctx);
+      }
+      const url = options.url ?? mergedOptions.url;
+      const username = options.username ?? mergedOptions.username;
+      const password = options.password ?? mergedOptions.password;
+      const token = options.serviceAccountToken ?? mergedOptions.serviceAccountToken;
+
+      if (url) ctx.baseUrl = String(url).trim();
+      if (username) ctx.username = String(username).trim();
+      if (password !== undefined) ctx.password = String(password);
+      if (token !== undefined) {
+        ctx.serviceAccountToken = String(token).trim();
+      }
+      config.context = name;
+      writeCliConfig(config);
+      console.log(`Saved auth context ${name}`);
+    });
+  authCommand
+    .command("whoami")
+    .description("Show current Grafana identity")
+    .option("--json", "print json")
+    .action(async function authWhoamiAction(options) {
+      const ctx = parseCommonOptions(this as unknown as Command);
+      const client = new GrafanaClient(ctx);
+      const me = await client.request<unknown>("GET", "/api/user", undefined, [200]);
+      if (options.json || ctx.output === "json") {
+        console.log(JSON.stringify(me, null, 2));
+        return;
+      }
+      console.log(JSON.stringify(me, null, 2));
+    });
+
+  program.addCommand(contextCommand);
+  program.addCommand(authCommand);
 
   for (const command of buildSyncCommands(app)) {
     program.addCommand(command);
@@ -1658,6 +1983,7 @@ export async function run() {
   }
 
   program.addCommand(buildQueryCommand(app));
+  program.addCommand(buildPanelCommand(app));
 
   for (const command of buildMutateCommands(app)) {
     program.addCommand(command);
@@ -1668,7 +1994,10 @@ export async function run() {
 
 export const __test__ = {
   parseEnvFile,
+  migrateLegacyConfig,
+  parseSimpleYamlConfig,
   parseResources,
+  parseResourceAlias,
   resourceFromType,
   inferResourceFromObject,
   parseWhereExpr,
@@ -1690,4 +2019,5 @@ export const __test__ = {
   getPathValue,
   setPathValue,
   deepMerge,
+  writeJson,
 };
