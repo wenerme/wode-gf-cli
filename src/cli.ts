@@ -435,6 +435,24 @@ async function fetchResources(client: GrafanaClient, resources: ResourceName[]):
   return bundle;
 }
 
+function dashboardFileName(item: JsonObject, used: Set<string>) {
+  const dashboard = getObjectField(item, "dashboard") || item;
+  const uid = asString(item.uid) || asString(dashboard.uid);
+  const title = asString(item.title) || asString(dashboard.title) || uid || "dashboard";
+  const base = uid ? safeName(uid) : safeName(title);
+  return `${uniqueBaseName(base, used)}.json`;
+}
+
+function folderTitleByUid(bundle: ExportBundle) {
+  const map = new Map<string, string>();
+  for (const folder of asObjectArray(bundle.folders)) {
+    const uid = asString(folder.uid);
+    const title = asString(folder.title);
+    if (uid && title) map.set(uid, title);
+  }
+  return map;
+}
+
 function bundleToFiles(outDir: string, bundle: ExportBundle, pretty: boolean) {
   ensureDir(outDir);
   // Remove legacy aggregate outputs. Export only split resource files.
@@ -475,14 +493,36 @@ function bundleToFiles(outDir: string, bundle: ExportBundle, pretty: boolean) {
   if (Array.isArray(bundle.dashboards)) {
     const dir = path.join(outDir, "dashboard");
     resetDir(dir);
-    const used = new Set<string>();
+    const folderMap = folderTitleByUid(bundle);
+    const usedByDir = new Map<string, Set<string>>();
     for (const item of asObjectArray(bundle.dashboards)) {
-      const dashboard = getObjectField(item, "dashboard");
-      const uid = String(item.uid || dashboard?.uid || "");
-      const title = String(item.title || dashboard?.title || uid || "dashboard");
-      const filename = uniqueBaseName(safeName(title), used);
-      const file = path.join(dir, `${filename}.json`);
-      writeJson(file, item, pretty);
+      const dashboard = getObjectField(item, "dashboard") || item;
+      const folderUid = asString(item.folderUid);
+      const folderTitle = folderUid ? folderMap.get(folderUid) || folderUid : undefined;
+      const targetDir = folderUid ? path.join(dir, safeName(folderTitle || folderUid)) : dir;
+      ensureDir(targetDir);
+      if (folderUid) {
+        writeJson(
+          path.join(targetDir, "_folder.json"),
+          { __type: "folder", uid: folderUid, title: folderTitle || folderUid },
+          pretty,
+        );
+      }
+      const used = usedByDir.get(targetDir) || new Set<string>();
+      usedByDir.set(targetDir, used);
+      const filename = dashboardFileName(item, used);
+      const file = path.join(targetDir, filename);
+      writeJson(file, dashboard, pretty);
+      writeJson(
+        path.join(targetDir, `${path.basename(filename, ".json")}.meta.json`),
+        {
+          __type: "dashboard-meta",
+          uid: asString(item.uid) || asString(dashboard.uid),
+          title: asString(item.title) || asString(dashboard.title),
+          folderUid: folderUid || undefined,
+        },
+        pretty,
+      );
     }
   }
 
@@ -596,7 +636,10 @@ function resourceFromFilePath(filePath: string): ResourceName | undefined {
 }
 
 function inferResourceFromObject(value: JsonObject): ResourceName | undefined {
+  if (value.__type === "dashboard-meta" || value.__type === "grafana-manifest") return undefined;
   if (value.dashboard && typeof value.dashboard === "object") return "dashboards";
+  if (value.panels || value.schemaVersion !== undefined || value.templating || value.time)
+    return "dashboards";
   if (value.title && value.uid && value.dashboard === undefined && value.schemaVersion === undefined)
     return "folders";
   if (value.type && (value.url !== undefined || value.access !== undefined || value.database !== undefined))
@@ -646,12 +689,48 @@ function mergeBundle(target: ExportBundle, from: ExportBundle) {
   if (from.policies !== undefined) appendEntry(target, "policies", from.policies);
 }
 
+function loadJsonFile(filePath: string): unknown {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function metadataForJsonFile(filePath: string): JsonObject | undefined {
+  const parsed = path.parse(filePath);
+  const metaFile = path.join(parsed.dir, `${parsed.name}.meta.json`);
+  if (!fs.existsSync(metaFile)) return undefined;
+  const meta = asObject(loadJsonFile(metaFile));
+  if (meta?.__type !== "dashboard-meta") return undefined;
+  return meta;
+}
+
+function folderMetaForDir(dir: string): JsonObject | undefined {
+  const file = path.join(dir, "_folder.json");
+  if (!fs.existsSync(file)) return undefined;
+  return asObject(loadJsonFile(file));
+}
+
+function withDashboardMetadata(filePath: string, value: JsonObject): JsonObject {
+  if (value.dashboard && typeof value.dashboard === "object") return value;
+  const meta = metadataForJsonFile(filePath);
+  const folderMeta = folderMetaForDir(path.dirname(filePath));
+  const folderUid = asString(meta?.folderUid) || asString(folderMeta?.uid);
+  return {
+    __type: "dashboard",
+    uid: asString(meta?.uid) || asString(value.uid),
+    title: asString(meta?.title) || asString(value.title),
+    folderUid: folderUid || undefined,
+    dashboard: value,
+  };
+}
+
 function applyJsonFileToBundle(
   bundle: ExportBundle,
   filePath: string,
   value: unknown,
   forcedResource?: ResourceName,
 ) {
+  const basename = path.basename(filePath);
+  if (basename === "grafana.manifest.json" || basename.endsWith(".meta.json")) return;
+
   const fileResource = resourceFromFilePath(filePath);
   const fallback = forcedResource || fileResource;
 
@@ -672,7 +751,7 @@ function applyJsonFileToBundle(
     const inferred = inferResourceFromObject(obj);
     const resource = byType || fallback || inferred;
     if (!resource) return;
-    appendEntry(bundle, resource, obj);
+    appendEntry(bundle, resource, resource === "dashboards" ? withDashboardMetadata(filePath, obj) : obj);
   }
 }
 
@@ -684,7 +763,7 @@ function loadImportTarget(targetPath: string, forcedResource?: ResourceName): Ex
 
   const stat = fs.statSync(resolved);
   if (stat.isFile()) {
-    const value = JSON.parse(fs.readFileSync(resolved, "utf8"));
+    const value = loadJsonFile(resolved);
     const bundle = createEmptyBundle();
     applyJsonFileToBundle(bundle, resolved, value, forcedResource);
     return bundle;
@@ -704,9 +783,15 @@ function loadImportTarget(targetPath: string, forcedResource?: ResourceName): Ex
         continue;
       }
       if (!st.isFile() || !name.toLowerCase().endsWith(".json")) continue;
-      if (name === "bundle.meta.json") continue;
+      if (
+        name === "bundle.meta.json" ||
+        name === "grafana.manifest.json" ||
+        name === "_folder.json" ||
+        name.endsWith(".meta.json")
+      )
+        continue;
       try {
-        const value = JSON.parse(fs.readFileSync(full, "utf8"));
+        const value = loadJsonFile(full);
         applyJsonFileToBundle(bundle, full, value, forcedResource);
       } catch {
         // Ignore invalid JSON files in mixed directories.
@@ -1214,6 +1299,15 @@ function extractPanelTargets(panel: JsonObject): DashboardTarget[] {
   }));
 }
 
+function collectPanels(input: unknown): JsonObject[] {
+  const panels: JsonObject[] = [];
+  for (const panel of asObjectArray(input)) {
+    panels.push(panel);
+    panels.push(...collectPanels(panel.panels));
+  }
+  return panels;
+}
+
 function collectDashboards(bundle: ExportBundle): JsonObject[] {
   return asObjectArray(bundle.dashboards)
     .map((entry) => {
@@ -1280,7 +1374,7 @@ async function validateDashboards(
       __org_name: "",
     };
 
-    const panels = asObjectArray(dashboard.panels);
+    const panels = collectPanels(dashboard.panels);
     const tasks: Array<{ panel: JsonObject; target: DashboardTarget }> = [];
     for (const panel of panels) {
       for (const target of extractPanelTargets(panel)) {
