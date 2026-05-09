@@ -3,6 +3,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { GrafanaClient } from "../client";
 import { asObject, asObjectArray, asString, getObjectField } from "../lib/json-narrow";
+import { jsonPathRegex, jsonPathSet } from "../lib/jsonpath-patch";
 import { CliName, type ResourceName, type ResourceSelector, ResourceSelectorSchema } from "../schema";
 import { parsePositiveInt } from "../utils";
 import type { CliContext, CommandAppContext } from "./runtime";
@@ -152,6 +153,19 @@ function selectResourceByToken(
   }
 
   throw lastNoMatch || new Error(`No ${resource} matched selector`);
+}
+
+function collectVariadic(value: string, previous: string[][]) {
+  previous.push([value]);
+  return previous;
+}
+
+function parseJsonPathValue(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }
 
 export function buildMutateCommands(app: CommandAppContext) {
@@ -362,6 +376,78 @@ export function buildMutateCommands(app: CommandAppContext) {
     }
 
     if (entry.resource === "dashboards") {
+      scoped
+        .command("patch-file <FILE>")
+        .alias("patch")
+        .allowUnknownOption(true)
+        .allowExcessArguments(true)
+        .description("Patch local dashboard JSON file with JSONPath set/regex operations")
+        .option("--set <jsonpath>", "set JSONPath value; value is the next token", collectVariadic, [])
+        .option(
+          "--regex <jsonpath>",
+          "regex replace JSONPath string values; pattern/replacement are next tokens",
+          collectVariadic,
+          [],
+        )
+        .option("--compact", "write compact json")
+        .option("--json", "print patch summary as json")
+        .action(function dashboardPatchFileAction(file: string, options) {
+          const command = this as unknown as Command;
+          const values = command.args.slice(1);
+          const setPaths = [...(options.set || [])].map((entry: string[]) => entry[0]);
+          const regexPaths = [...(options.regex || [])].map((entry: string[]) => entry[0]);
+          const operations: Array<
+            | { kind: "set"; path: string; value: unknown }
+            | { kind: "regex"; path: string; pattern: string; replacement: string }
+          > = [];
+          let valueIndex = 0;
+          for (let index = 0; index < setPaths.length; index += 1) {
+            const pathArg = setPaths[index];
+            const valueArg = values[valueIndex];
+            if (!pathArg || valueArg === undefined) throw new Error("--set requires <jsonpath> <value>");
+            operations.push({ kind: "set", path: pathArg, value: parseJsonPathValue(valueArg) });
+            valueIndex += 1;
+          }
+          for (let index = 0; index < regexPaths.length; index += 1) {
+            const pathArg = regexPaths[index];
+            const pattern = values[valueIndex];
+            const replacement = values[valueIndex + 1];
+            if (!pathArg || pattern === undefined || replacement === undefined) {
+              throw new Error("--regex requires <jsonpath> <pattern> <replacement>");
+            }
+            operations.push({ kind: "regex", path: pathArg, pattern, replacement });
+            valueIndex += 2;
+          }
+          if (valueIndex < values.length) {
+            throw new Error(`Unexpected extra patch arguments: ${values.slice(valueIndex).join(" ")}`);
+          }
+          if (operations.length === 0) throw new Error("No patch operation provided. Use --set or --regex.");
+
+          const resolvedFile = path.resolve(file);
+          const data = JSON.parse(fs.readFileSync(resolvedFile, "utf8"));
+          const results = operations.map((operation) => {
+            const result =
+              operation.kind === "set"
+                ? jsonPathSet(data, operation.path, operation.value)
+                : jsonPathRegex(data, operation.path, operation.pattern, operation.replacement);
+            return { ...operation, ...result };
+          });
+          fs.writeFileSync(resolvedFile, `${JSON.stringify(data, null, options.compact ? 0 : 2)}\n`, "utf8");
+          if (options.json) {
+            console.log(JSON.stringify({ file: resolvedFile, operations: results }, null, 2));
+            return;
+          }
+          printMessage(
+            parseCommonOptions(this as unknown as Command, { requireUrl: false }),
+            results
+              .map(
+                (result) =>
+                  `${result.kind} ${result.path}: matched ${result.matched}, changed ${result.changed}`,
+              )
+              .join("\n"),
+          );
+        });
+
       scoped
         .command("list")
         .description("List dashboards")

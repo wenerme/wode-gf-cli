@@ -55,7 +55,7 @@ ${formatRows([
   ["policy", "get <ID>"],
   [
     "panel / p",
-    "list DASH | get DASH/PANEL | inspect DASH/PANEL | patch DASH/PANEL | edit DASH/PANEL | render DASH/PANEL",
+    "list DASH | get DASH/PANEL | inspect DASH/PANEL | patch DASH/PANEL | edit DASH/PANEL | validate DASH/PANEL | render DASH/PANEL",
   ],
   ["user", "list [--search <TERM>]"],
 ])}`;
