@@ -27,6 +27,7 @@ export function buildSyncCommands(app: CommandAppContext) {
     parseResourceAlias,
     dedupeResources,
     collectBundle,
+    collectDashboards,
     fetchResources,
     bundleToFiles,
     importResources,
@@ -38,6 +39,7 @@ export function buildSyncCommands(app: CommandAppContext) {
     diffArray,
     printMessage,
     printData,
+    validateDashboardPromQLSyntax,
     writeJson,
   } = runtime;
 
@@ -148,6 +150,7 @@ export function buildSyncCommands(app: CommandAppContext) {
     )
     .option("--overwrite", "overwrite existing dashboards when importing", true)
     .option("--no-overwrite", "do not overwrite existing dashboards")
+    .option("--skip-promql-check", "skip local PromQL syntax checks before importing dashboards")
     .action(async function importAction(sources: string[] | undefined, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
       const fallbackType = parseResourceAlias(options.type);
@@ -164,6 +167,17 @@ export function buildSyncCommands(app: CommandAppContext) {
       const resources = options.resources ? parseResources(options.resources) : bundleResources(merged);
       if (resources.length === 0) throw new Error("No importable resources found in sources");
       merged.resources = dedupeResources(resources);
+      if (resources.includes("dashboards") && !options.skipPromqlCheck) {
+        const promqlErrors = validateDashboardPromQLSyntax(collectDashboards(merged));
+        if (promqlErrors.length > 0) {
+          throw new Error(
+            `PromQL syntax check failed before import: ${promqlErrors
+              .slice(0, 3)
+              .map((item) => `${item.dashboardTitle} / ${item.panelTitle} / ${item.refId}: ${item.message}`)
+              .join("; ")}${promqlErrors.length > 3 ? `; ... ${promqlErrors.length - 3} more` : ""}`,
+          );
+        }
+      }
 
       await importResources(ctx, merged, resources, { overwrite: options.overwrite });
       const importedCount = resources.reduce(
@@ -196,6 +210,7 @@ export function buildSyncCommands(app: CommandAppContext) {
     )
     .option("--overwrite", "overwrite existing dashboards when pushing", true)
     .option("--no-overwrite", "do not overwrite existing dashboards")
+    .option("--skip-promql-check", "skip local PromQL syntax checks before pushing dashboards")
     .action(async function pushAction(sources: string[] | undefined, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
       const fallbackType = parseResourceAlias(options.type);
@@ -212,6 +227,17 @@ export function buildSyncCommands(app: CommandAppContext) {
       const resources = options.resources ? parseResources(options.resources) : bundleResources(merged);
       if (resources.length === 0) throw new Error("No pushable resources found in sources");
       merged.resources = dedupeResources(resources);
+      if (resources.includes("dashboards") && !options.skipPromqlCheck) {
+        const promqlErrors = validateDashboardPromQLSyntax(collectDashboards(merged));
+        if (promqlErrors.length > 0) {
+          throw new Error(
+            `PromQL syntax check failed before push: ${promqlErrors
+              .slice(0, 3)
+              .map((item) => `${item.dashboardTitle} / ${item.panelTitle} / ${item.refId}: ${item.message}`)
+              .join("; ")}${promqlErrors.length > 3 ? `; ... ${promqlErrors.length - 3} more` : ""}`,
+          );
+        }
+      }
 
       await importResources(ctx, merged, resources, { overwrite: options.overwrite });
       const pushedCount = resources.reduce(

@@ -31,7 +31,7 @@ export type ValidateIssue = {
   message: string;
   datasourceUid?: string;
   datasourceType?: string;
-  kind?: "query-error" | "no-data" | "skip";
+  kind?: "query-error" | "promql-syntax" | "no-data" | "skip";
 };
 
 export type DiffItem = {
@@ -101,6 +101,7 @@ export type CliRuntime = {
       intervalMs: number;
       concurrency: number;
       failFast: boolean;
+      syntaxOnly?: boolean;
       skipPanelIds: number[];
       onlyPanelIds?: number[];
       datasourceTypes?: string[];
@@ -113,6 +114,7 @@ export type CliRuntime = {
   parseSetExpr: (expr: string, defaultPath?: string) => { path: string; value: unknown };
   createEmptyBundle: () => ExportBundle;
   setSingleResource: (bundle: ExportBundle, resource: ResourceName, item: unknown) => void;
+  validateDashboardPromQLSyntax: (dashboards: JsonObject[]) => ValidateIssue[];
   writeJson: (file: string, data: unknown, pretty?: boolean) => void;
   deleteSingleResource: (
     ctx: CliContext,

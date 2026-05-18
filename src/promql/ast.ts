@@ -6,12 +6,14 @@ export type PromQLNode =
   | PromQLDurationLiteral
   | PromQLDurationPart
   | PromQLTemplateRef
+  | PromQLTemplateCallExpression
   | PromQLStringText;
 
 export type PromQLExpression =
   | PromQLNumberLiteral
   | PromQLStringLiteral
   | PromQLTemplateRef
+  | PromQLTemplateCallExpression
   | PromQLVectorSelector
   | PromQLMatrixSelector
   | PromQLSubqueryExpression
@@ -33,7 +35,7 @@ export type PromQLStringText = {
   value: string;
 };
 
-export type PromQLStringPart = PromQLStringText | PromQLTemplateRef;
+export type PromQLStringPart = PromQLStringText | PromQLTemplateRef | PromQLTemplateCallExpression;
 
 export type PromQLStringLiteral = {
   type: "StringLiteral";
@@ -67,7 +69,15 @@ export type PromQLDurationLiteral = {
   parts: PromQLDurationPart[];
 };
 
-export type PromQLRangeExpression = PromQLDurationLiteral | PromQLTemplateRef;
+export type PromQLTemplateCallArgument = PromQLExpression | PromQLDurationLiteral;
+
+export type PromQLTemplateCallExpression = {
+  type: "TemplateCallExpression";
+  callee: PromQLTemplateRef;
+  arguments: PromQLTemplateCallArgument[];
+};
+
+export type PromQLRangeExpression = PromQLDurationLiteral | PromQLTemplateRef | PromQLTemplateCallExpression;
 
 export type PromQLLabelMatchOperator = "=" | "!=" | "=~" | "!~";
 

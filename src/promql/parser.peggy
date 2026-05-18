@@ -109,6 +109,7 @@ PostfixExpr
 Primary
   = AggregateExpr
   / FunctionCall
+  / TemplateCallExpr
   / VectorSelector
   / NumberLiteral
   / StringLiteral
@@ -123,10 +124,22 @@ AggregateExpr
 FunctionCall
   = callee:Identifier _ "(" _ args:Args? _ ")" { return { type: "CallExpression", callee, arguments: args || [] }; }
 
+TemplateCallExpr
+  = callee:TemplateRef _ "(" _ args:TemplateCallArgs? _ ")" { return { type: "TemplateCallExpression", callee, arguments: args || [] }; }
+
 Args
   = head:Expr tail:(_ "," _ next:Expr { return next; })* _ ","? {
       return [head, ...tail];
     }
+
+TemplateCallArgs
+  = head:TemplateCallArg tail:(_ "," _ next:TemplateCallArg { return next; })* _ ","? {
+      return [head, ...tail];
+    }
+
+TemplateCallArg
+  = DurationLiteral
+  / Expr
 
 VectorSelector
   = metricName:Identifier? _ matchers:LabelMatchers { return { type: "VectorSelector", metricName: metricName || undefined, matchers }; }
@@ -167,7 +180,8 @@ VectorMatchingPart
     }
 
 Range
-  = TemplateRef
+  = TemplateCallExpr
+  / TemplateRef
   / DurationLiteral
 
 SubqueryResolution
@@ -190,11 +204,13 @@ StringLiteral
   / value:("'" parts:SingleStringPart* "'" { return { raw: text(), parts }; }) { return makeString("'", value.parts, value.raw); }
 
 DoubleStringPart
-  = ref:TemplateRef { return ref; }
+  = call:TemplateCallExpr { return call; }
+  / ref:TemplateRef { return ref; }
   / raw:$("\\" . / !('"' / "$") .)+ { return { type: "StringText", raw, value: raw }; }
 
 SingleStringPart
-  = ref:TemplateRef { return ref; }
+  = call:TemplateCallExpr { return call; }
+  / ref:TemplateRef { return ref; }
   / raw:$("\\" . / !("'" / "$") .)+ { return { type: "StringText", raw, value: raw }; }
 
 NumberLiteral

@@ -54,10 +54,13 @@ export function collectPromQLTemplateRefs(expr: PromQLExpression): PromQLTemplat
       case "TemplateRef":
         refs.push(node);
         return;
+      case "TemplateCallExpression":
+        visit(node.callee);
+        for (const arg of node.arguments) visit(arg);
+        return;
       case "StringText":
       case "NumberLiteral":
       case "DurationLiteral":
-      case "DurationPart":
         return;
       case "StringLiteral":
         for (const part of node.parts) visit(part);

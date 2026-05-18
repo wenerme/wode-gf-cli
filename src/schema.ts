@@ -104,6 +104,7 @@ export const ValidateOptionsSchema = z.object({
   datasourceTypes: z.array(z.string()).default([]),
   skipTypes: z.array(z.string()).default([]),
   failFast: z.boolean(),
+  syntaxOnly: z.boolean().default(false),
   vars: z.array(z.string()),
 });
 export type ValidateOptions = z.infer<typeof ValidateOptionsSchema>;
