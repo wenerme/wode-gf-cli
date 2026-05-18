@@ -168,6 +168,28 @@ function parseJsonPathValue(value: string): unknown {
   }
 }
 
+function parsePanelIdFilter(panelId: string | undefined) {
+  const text = String(panelId || "ALL").trim();
+  if (!text || text.toUpperCase() === "ALL") return "*";
+  const ids = text
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (ids.length === 0) return "*";
+  for (const id of ids) {
+    if (!/^\d+$/.test(id)) throw new Error(`Invalid --panel-id value: ${panelId}`);
+  }
+  return `?(${ids.map((id) => `@.id==${id}`).join(" || ")})`;
+}
+
+function panelScopedJsonPaths(panelId: string | undefined, pathExpr: string) {
+  const path = pathExpr.trim();
+  if (!path) throw new Error("Missing patch path");
+  if (path.startsWith("$")) return [path];
+  const selector = parsePanelIdFilter(panelId);
+  return [`$..panels[${selector}].${path}`];
+}
+
 export function buildMutateCommands(app: CommandAppContext) {
   const {
     collectList,
@@ -382,6 +404,11 @@ export function buildMutateCommands(app: CommandAppContext) {
         .allowUnknownOption(true)
         .allowExcessArguments(true)
         .description("Patch local dashboard JSON file with JSONPath set/regex operations")
+        .option(
+          "--panel-id <ids>",
+          "panel id filter for relative patch paths: ALL or comma-separated ids",
+          "ALL",
+        )
         .option("--set <jsonpath>", "set JSONPath value; value is the next token", collectVariadic, [])
         .option(
           "--regex <jsonpath>",
@@ -405,7 +432,9 @@ export function buildMutateCommands(app: CommandAppContext) {
             const pathArg = setPaths[index];
             const valueArg = values[valueIndex];
             if (!pathArg || valueArg === undefined) throw new Error("--set requires <jsonpath> <value>");
-            operations.push({ kind: "set", path: pathArg, value: parseJsonPathValue(valueArg) });
+            for (const scopedPath of panelScopedJsonPaths(options.panelId, pathArg)) {
+              operations.push({ kind: "set", path: scopedPath, value: parseJsonPathValue(valueArg) });
+            }
             valueIndex += 1;
           }
           for (let index = 0; index < regexPaths.length; index += 1) {
@@ -415,7 +444,9 @@ export function buildMutateCommands(app: CommandAppContext) {
             if (!pathArg || pattern === undefined || replacement === undefined) {
               throw new Error("--regex requires <jsonpath> <pattern> <replacement>");
             }
-            operations.push({ kind: "regex", path: pathArg, pattern, replacement });
+            for (const scopedPath of panelScopedJsonPaths(options.panelId, pathArg)) {
+              operations.push({ kind: "regex", path: scopedPath, pattern, replacement });
+            }
             valueIndex += 2;
           }
           if (valueIndex < values.length) {

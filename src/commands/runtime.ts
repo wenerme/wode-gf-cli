@@ -29,6 +29,9 @@ export type ValidateIssue = {
   panelId: number;
   refId: string;
   message: string;
+  datasourceUid?: string;
+  datasourceType?: string;
+  kind?: "query-error" | "no-data" | "skip";
 };
 
 export type DiffItem = {
@@ -100,6 +103,8 @@ export type CliRuntime = {
       failFast: boolean;
       skipPanelIds: number[];
       onlyPanelIds?: number[];
+      datasourceTypes?: string[];
+      skipTypes?: string[];
       vars: Record<string, string>;
     },
   ) => Promise<{ errors: ValidateIssue[]; warnings: ValidateIssue[] }>;

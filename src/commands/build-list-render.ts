@@ -164,6 +164,7 @@ export function buildListAndRenderCommands(app: CommandAppContext) {
       const image = await client.requestBytes("GET", renderPath, [200]);
       ensureDir(path.dirname(base.out));
       fs.writeFileSync(base.out, Buffer.from(image));
+      const noDataWarning = image.length < 20 * 1024;
 
       printData(ctx, "render-complete", {
         target: normalizedTarget,
@@ -171,10 +172,11 @@ export function buildListAndRenderCommands(app: CommandAppContext) {
         panelId: options.panelId,
         out: base.out,
         size: image.length,
+        possibleNoData: noDataWarning,
         message:
           normalizedTarget === "panel"
-            ? `Rendered panel image: ${base.out} (${image.length} bytes)`
-            : `Rendered dashboard image: ${base.out} (${image.length} bytes)`,
+            ? `Rendered panel image: ${base.out} (${image.length} bytes)${noDataWarning ? `\n[WARN] possible NoData (file size: ${(image.length / 1024).toFixed(1)}KB)` : ""}`
+            : `Rendered dashboard image: ${base.out} (${image.length} bytes)${noDataWarning ? `\n[WARN] possible NoData (file size: ${(image.length / 1024).toFixed(1)}KB)` : ""}`,
       });
     });
 

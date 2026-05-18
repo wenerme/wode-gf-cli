@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { __test__ } from "./cli";
 import { parsePanelRef, replacePanelInDashboard } from "./commands/build-panel";
+import { calcClsInterval } from "./lib/cls-interval";
 
 describe("cli internal unit tests", () => {
   it("parses env file with export/quote/comment", () => {
@@ -205,6 +206,18 @@ describe("cli internal unit tests", () => {
     expect(__test__.msToInterval(60_000)).toBe("1m");
     expect(__test__.msToInterval(3_600_000)).toBe("1h");
     expect(__test__.msToInterval(86_400_000)).toBe("1d");
+    expect(calcClsInterval(0, 3_600_000)).toBe("1 minute");
+    expect(calcClsInterval(0, 21_600_000)).toBe("5 minute");
+    expect(calcClsInterval(0, 86_400_000)).toBe("10 minute");
+    expect(calcClsInterval(0, 2_592_000_000)).toBe("6 hour");
+  });
+
+  it("finds unresolved template tokens", () => {
+    const knownCsv = "$" + "{known:csv}";
+    expect(__test__.findUnresolvedTemplateTokens({ a: "$__unknown", b: knownCsv })).toEqual([
+      "$__unknown",
+      knownCsv,
+    ]);
   });
 
   it("gets and sets nested path values", () => {

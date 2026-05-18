@@ -11,9 +11,11 @@ import { buildQueryCommand } from "./commands/build-query";
 import { buildSyncCommands } from "./commands/build-sync";
 import { buildValidateCommand } from "./commands/build-validate";
 import type { CliRuntime, CommandAppContext } from "./commands/runtime";
+import { calcClsInterval } from "./lib/cls-interval";
 import { asObject, asObjectArray, asString, getObjectField } from "./lib/json-narrow";
 import {
   extractTemplatingValues,
+  findUnresolvedTemplateTokens,
   resolveDatasourceUid,
   resolveTemplateString,
   resolveTemplateValue,
@@ -1092,21 +1094,20 @@ function parseSetExpr(expr: string, defaultPath?: string): { path: string; value
   return SetExprSchema.parse({ path: defaultPath, value: parseJsonLike(expr) });
 }
 
-type ValidateWarning = {
+type ValidateIssueBase = {
   dashboardTitle: string;
   panelTitle: string;
   panelId: number;
   refId: string;
   message: string;
+  datasourceUid?: string;
+  datasourceType?: string;
+  kind?: "query-error" | "no-data" | "skip";
 };
 
-type ValidateError = {
-  dashboardTitle: string;
-  panelTitle: string;
-  panelId: number;
-  refId: string;
-  message: string;
-};
+type ValidateWarning = ValidateIssueBase;
+
+type ValidateError = ValidateIssueBase;
 
 type DashboardTarget = {
   refId: string;
@@ -1345,11 +1346,21 @@ async function validateDashboards(
   const client = new GrafanaClient({ ...ctx, timeoutMs: options.timeoutMs });
   const skipSet = new Set(options.skipPanelIds);
   const onlySet = new Set(options.onlyPanelIds || []);
+  const onlyDatasourceTypes = new Set(options.datasourceTypes || []);
+  const skipDatasourceTypes = new Set(options.skipTypes || []);
   const nowMs = Date.now();
   const fromMs = resolveTimeToMs(options.from, nowMs);
   const toMs = resolveTimeToMs(options.to, nowMs);
   const rangeMs = Math.max(0, toMs - fromMs);
   const rangeS = Math.round(rangeMs / 1000);
+  const datasourceTypeByUid = new Map<string, string>();
+  if (onlyDatasourceTypes.size > 0 || skipDatasourceTypes.size > 0) {
+    for (const datasource of asObjectArray(await client.request<unknown[]>("GET", "/api/datasources"))) {
+      const uid = asString(datasource.uid);
+      const type = asString(datasource.type);
+      if (uid && type) datasourceTypeByUid.set(uid, type);
+    }
+  }
 
   for (const dashboardEntry of dashboards) {
     const dashboard = getObjectField(dashboardEntry, "dashboard");
@@ -1365,6 +1376,7 @@ async function validateDashboards(
       __timeFilter: `"time" BETWEEN to_timestamp(${fromMs / 1000}) AND to_timestamp(${toMs / 1000})`,
       __interval_ms: String(options.intervalMs),
       __interval: msToInterval(options.intervalMs),
+      __cls_interval: calcClsInterval(fromMs, toMs),
       __rate_interval: msToInterval(Math.max(options.intervalMs * 4, 240_000)),
       __range: `${rangeS}s`,
       __range_ms: String(rangeMs),
@@ -1385,16 +1397,7 @@ async function validateDashboards(
     await mapLimit(tasks, options.concurrency, async ({ panel, target }) => {
       const panelId = Number.parseInt(String(panel.id || "0"), 10) || 0;
       if (onlySet.size > 0 && !onlySet.has(panelId)) return;
-      if (skipSet.has(panelId)) {
-        warnings.push({
-          dashboardTitle,
-          panelTitle: asString(panel.title) || "(untitled panel)",
-          panelId,
-          refId: target.refId,
-          message: `Panel id ${panelId} skipped by --skip-panel-ids`,
-        });
-        return;
-      }
+      if (skipSet.has(panelId)) return;
 
       const panelDatasource = getObjectField(panel, "datasource");
       const targetDatasource = getObjectField(target.raw, "datasource");
@@ -1404,6 +1407,10 @@ async function validateDashboards(
         dashboardVars,
       );
 
+      const datasourceType = datasourceUid ? datasourceTypeByUid.get(datasourceUid) : undefined;
+      if (datasourceType && onlyDatasourceTypes.size > 0 && !onlyDatasourceTypes.has(datasourceType)) return;
+      if (datasourceType && skipDatasourceTypes.has(datasourceType)) return;
+
       if (!datasourceUid) {
         warnings.push({
           dashboardTitle,
@@ -1411,6 +1418,7 @@ async function validateDashboards(
           panelId,
           refId: target.refId,
           message: "Skip target: datasource uid unresolved",
+          kind: "skip",
         });
         return;
       }
@@ -1419,6 +1427,11 @@ async function validateDashboards(
       const expr = asString(target.raw.expr);
       if (!rawSql && !expr) return;
 
+      const maxDataPoints = Number.parseInt(String(target.raw.maxDataPoints || "1000"), 10) || 1000;
+      const queryVars = {
+        ...dashboardVars,
+        __cls_interval: calcClsInterval(fromMs, toMs, maxDataPoints),
+      };
       const queryBody = resolveTemplateValue(
         {
           refId: target.refId,
@@ -1427,11 +1440,24 @@ async function validateDashboards(
           rawQuery: rawSql,
           expr,
           format: asString(target.raw.format) || "table",
-          intervalMs: 60_000,
-          maxDataPoints: 1000,
+          intervalMs: options.intervalMs,
+          maxDataPoints,
         },
-        dashboardVars,
+        queryVars,
       ) as JsonObject;
+      const unresolvedTokens = findUnresolvedTemplateTokens(queryBody);
+      if (unresolvedTokens.length > 0) {
+        warnings.push({
+          dashboardTitle,
+          panelTitle: asString(panel.title) || "(untitled panel)",
+          panelId,
+          refId: target.refId,
+          datasourceUid,
+          datasourceType,
+          kind: "skip",
+          message: `unresolved template tokens: ${unresolvedTokens.join(", ")}`,
+        });
+      }
 
       const payload = {
         from: String(fromMs),
@@ -1443,13 +1469,18 @@ async function validateDashboards(
       const data = asObject(response.data);
       const results = data ? getObjectField(data, "results") : undefined;
       const result = results ? getObjectField(results, target.refId) : undefined;
-      const error = result ? asString(result.error) : undefined;
+      const error = result
+        ? asString(result.error) || asString(result.errorMessage) || asString(result.message)
+        : undefined;
       if (error) {
         errors.push({
           dashboardTitle,
           panelTitle: asString(panel.title) || "(untitled panel)",
           panelId,
           refId: target.refId,
+          datasourceUid,
+          datasourceType,
+          kind: "query-error",
           message: error,
         });
         if (options.failFast) {
@@ -1461,12 +1492,31 @@ async function validateDashboards(
       }
 
       if (response.status !== 200) {
+        const message =
+          error || (typeof response.data === "string" ? response.data : JSON.stringify(response.data));
+        errors.push({
+          dashboardTitle,
+          panelTitle: asString(panel.title) || "(untitled panel)",
+          panelId,
+          refId: target.refId,
+          datasourceUid,
+          datasourceType,
+          kind: "query-error",
+          message: `HTTP ${response.status}: ${message}`,
+        });
+        return;
+      }
+
+      if (!renderFramesText(response.data, target.refId)) {
         warnings.push({
           dashboardTitle,
           panelTitle: asString(panel.title) || "(untitled panel)",
           panelId,
           refId: target.refId,
-          message: `Skip target: /api/ds/query returned HTTP ${response.status}`,
+          datasourceUid,
+          datasourceType,
+          kind: "no-data",
+          message: "no data returned",
         });
       }
     });
@@ -2107,6 +2157,7 @@ export const __test__ = {
   resolveTimeToMs,
   msToInterval,
   extractTemplatingValues,
+  findUnresolvedTemplateTokens,
   resolveTemplateString,
   resolveDatasourceUid,
   pathSegments,
