@@ -12,6 +12,8 @@ export function buildValidateCommand(app: CommandAppContext) {
     .argument("[sources...]", "source files/directories")
     .description("Validate dashboard queries via Grafana /api/ds/query")
     .option("--skip-panel-ids <ids>", "comma-separated panel ids to skip")
+    .option("--datasource-type <type>", "only validate datasource type, repeatable", collectList, [])
+    .option("--skip-type <type>", "skip datasource type, repeatable", collectList, [])
     .option("--from <time>", "query time start", "now-1h")
     .option("--to <time>", "query time end", "now")
     .option("--timeout <ms>", "request timeout milliseconds for validate", "60000")
@@ -30,6 +32,8 @@ export function buildValidateCommand(app: CommandAppContext) {
         intervalMs: parsePositiveInt(options.intervalMs, 60_000),
         concurrency: parsePositiveInt(options.concurrency, 4),
         skipPanelIds: parseSkipPanelIds(options.skipPanelIds),
+        datasourceTypes: options.datasourceType || [],
+        skipTypes: options.skipType || [],
         failFast: Boolean(options.failFast),
         vars: options.var || [],
       });
@@ -46,6 +50,8 @@ export function buildValidateCommand(app: CommandAppContext) {
         concurrency: parsedOptions.concurrency,
         failFast: parsedOptions.failFast,
         skipPanelIds: parsedOptions.skipPanelIds,
+        datasourceTypes: parsedOptions.datasourceTypes,
+        skipTypes: parsedOptions.skipTypes,
         vars: varOverrides,
       });
 
@@ -62,7 +68,7 @@ export function buildValidateCommand(app: CommandAppContext) {
         for (const item of items) {
           printMessage(
             ctx,
-            `  Panel: ${item.panelTitle} (id=${item.panelId}) / refId=${item.refId}\n  Error: ${item.message}`,
+            `  Panel: ${item.panelTitle} (id=${item.panelId}) / refId=${item.refId}${item.datasourceType ? ` / type=${item.datasourceType}` : ""}\n  ERROR: query error — ${item.message}`,
           );
         }
         printMessage(ctx, `  Summary: ${items.length} errors across ${totalPanels} panels`);
@@ -76,7 +82,7 @@ export function buildValidateCommand(app: CommandAppContext) {
       for (const warning of warnings) {
         printMessage(
           ctx,
-          `[WARN] Dashboard: ${warning.dashboardTitle} / Panel: ${warning.panelTitle} (id=${warning.panelId}) / refId=${warning.refId} / ${warning.message}`,
+          `[WARN] Dashboard: ${warning.dashboardTitle} / Panel: ${warning.panelTitle} (id=${warning.panelId}) / refId=${warning.refId}${warning.datasourceType ? ` / type=${warning.datasourceType}` : ""} / ${warning.kind === "no-data" ? `WARN: no data returned` : warning.message}`,
         );
       }
 

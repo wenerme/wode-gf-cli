@@ -592,13 +592,15 @@ export function buildPanelCommand(app: CommandAppContext) {
       const image = await client.requestBytes("GET", renderPath, [200]);
       runtime.ensureDir(path.dirname(out));
       fs.writeFileSync(out, Buffer.from(image));
+      const noDataWarning = image.length < 20 * 1024;
       runtime.printData(ctx, "panel-render-complete", {
         ref,
         dashboardUid: selection.uid,
         panelId: parsed.panelId,
         out,
         size: image.length,
-        message: `Rendered panel image: ${out} (${image.length} bytes)`,
+        possibleNoData: noDataWarning,
+        message: `Rendered panel image: ${out} (${image.length} bytes)${noDataWarning ? `\n[WARN] possible NoData (file size: ${(image.length / 1024).toFixed(1)}KB)` : ""}`,
       });
     });
 

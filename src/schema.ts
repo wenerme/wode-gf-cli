@@ -101,6 +101,8 @@ export const ValidateOptionsSchema = z.object({
   intervalMs: z.number().int().min(1000),
   concurrency: z.number().int().min(1).max(32),
   skipPanelIds: z.array(z.number().int().positive()),
+  datasourceTypes: z.array(z.string()).default([]),
+  skipTypes: z.array(z.string()).default([]),
   failFast: z.boolean(),
   vars: z.array(z.string()),
 });

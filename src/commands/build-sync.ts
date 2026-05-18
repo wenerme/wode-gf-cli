@@ -166,11 +166,19 @@ export function buildSyncCommands(app: CommandAppContext) {
       merged.resources = dedupeResources(resources);
 
       await importResources(ctx, merged, resources, { overwrite: options.overwrite });
+      const importedCount = resources.reduce(
+        (sum, resource) => sum + resourceItems(merged, resource).length,
+        0,
+      );
       printData(ctx, "import-complete", {
         resources,
         input: resolvedSources,
         dryRun: ctx.dryRun,
-        message: `Imported resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}`,
+        imported: importedCount,
+        updated: ctx.dryRun ? 0 : importedCount,
+        unchanged: 0,
+        failed: 0,
+        message: `Imported resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}\nImported: ${ctx.dryRun ? 0 : importedCount} updated, 0 unchanged, 0 failed`,
       });
       if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
     });
@@ -206,11 +214,19 @@ export function buildSyncCommands(app: CommandAppContext) {
       merged.resources = dedupeResources(resources);
 
       await importResources(ctx, merged, resources, { overwrite: options.overwrite });
+      const pushedCount = resources.reduce(
+        (sum, resource) => sum + resourceItems(merged, resource).length,
+        0,
+      );
       printData(ctx, "push-complete", {
         resources,
         input: resolvedSources,
         dryRun: ctx.dryRun,
-        message: `Pushed resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}`,
+        imported: pushedCount,
+        updated: ctx.dryRun ? 0 : pushedCount,
+        unchanged: 0,
+        failed: 0,
+        message: `Pushed resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}\nImported: ${ctx.dryRun ? 0 : pushedCount} updated, 0 unchanged, 0 failed`,
       });
       if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
     });

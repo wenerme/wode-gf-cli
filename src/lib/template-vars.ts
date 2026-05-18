@@ -127,6 +127,28 @@ export function resolveTemplateString(input: string, vars: TemplateVars): string
   });
 }
 
+export function findUnresolvedTemplateTokens(value: unknown): string[] {
+  const tokens = new Set<string>();
+  const visit = (input: unknown) => {
+    if (typeof input === "string") {
+      for (const match of input.matchAll(
+        /\$\{[A-Za-z0-9_:-]+\}|\$__[A-Za-z0-9_]+|\$[A-Za-z][A-Za-z0-9_]*/g,
+      )) {
+        tokens.add(match[0]);
+      }
+      return;
+    }
+    if (Array.isArray(input)) {
+      for (const item of input) visit(item);
+      return;
+    }
+    if (!input || typeof input !== "object") return;
+    for (const item of Object.values(input as Record<string, unknown>)) visit(item);
+  };
+  visit(value);
+  return Array.from(tokens).sort();
+}
+
 export function resolveTemplateValue(value: unknown, vars: TemplateVars): unknown {
   if (typeof value === "string") return resolveTemplateString(value, vars);
   if (Array.isArray(value)) return value.map((v) => resolveTemplateValue(v, vars));
