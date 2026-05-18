@@ -57,3 +57,4 @@ build/
 bun.lock
 bun.lockb
 .mcp.json
+.agents/
