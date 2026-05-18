@@ -85,6 +85,57 @@ describe("promql parser", () => {
     ]);
   });
 
+  it("parses Grafana macro calls with arguments wherever template refs are accepted", () => {
+    const expr = parsePromQL(
+      'sum by (time) (rate(request_total{bucket="$__timeGroup(created_at, $__interval)"}[$__timeGroup(created_at, $__interval)]))',
+    );
+
+    expect(expr.type).toBe("AggregateExpression");
+    if (expr.type !== "AggregateExpression") throw new Error("expected aggregate");
+    const call = expr.arguments[0];
+    expect(call?.type).toBe("CallExpression");
+    if (call?.type !== "CallExpression") throw new Error("expected call");
+    const matrix = call.arguments[0];
+    expect(matrix?.type).toBe("MatrixSelector");
+    if (matrix?.type !== "MatrixSelector") throw new Error("expected matrix selector");
+    expect(matrix.range).toEqual({
+      type: "TemplateCallExpression",
+      callee: {
+        type: "TemplateRef",
+        raw: "$__timeGroup",
+        name: "__timeGroup",
+        format: undefined,
+        braced: false,
+      },
+      arguments: [
+        { type: "VectorSelector", metricName: "created_at", matchers: [] },
+        { type: "TemplateRef", raw: "$__interval", name: "__interval", format: undefined, braced: false },
+      ],
+    });
+    expect(matrix.vector.matchers[0]?.value.parts).toEqual([
+      {
+        type: "TemplateCallExpression",
+        callee: {
+          type: "TemplateRef",
+          raw: "$__timeGroup",
+          name: "__timeGroup",
+          format: undefined,
+          braced: false,
+        },
+        arguments: [
+          { type: "VectorSelector", metricName: "created_at", matchers: [] },
+          { type: "TemplateRef", raw: "$__interval", name: "__interval", format: undefined, braced: false },
+        ],
+      },
+    ]);
+    expect(collectPromQLTemplateRefs(expr).map((ref) => ref.raw)).toEqual([
+      "$__timeGroup",
+      "$__interval",
+      "$__timeGroup",
+      "$__interval",
+    ]);
+  });
+
   it("parses real dashboard subquery range and template resolution", () => {
     const expr = parsePromQL(`
       avg_over_time(

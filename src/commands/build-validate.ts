@@ -20,6 +20,7 @@ export function buildValidateCommand(app: CommandAppContext) {
     .option("--interval-ms <ms>", "grafana built-in interval in milliseconds", "60000")
     .option("--concurrency <n>", "request concurrency", "4")
     .option("--fail-fast", "stop when first validation error found")
+    .option("--syntax-only", "only run local syntax checks; do not call Grafana /api/ds/query")
     .option("--var <expr>", "variable override key=value, repeatable", collectList, [])
     .action(async function validateAction(sources: string[] | undefined, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
@@ -35,6 +36,7 @@ export function buildValidateCommand(app: CommandAppContext) {
         datasourceTypes: options.datasourceType || [],
         skipTypes: options.skipType || [],
         failFast: Boolean(options.failFast),
+        syntaxOnly: Boolean(options.syntaxOnly),
         vars: options.var || [],
       });
 
@@ -49,6 +51,7 @@ export function buildValidateCommand(app: CommandAppContext) {
         intervalMs: parsedOptions.intervalMs,
         concurrency: parsedOptions.concurrency,
         failFast: parsedOptions.failFast,
+        syntaxOnly: parsedOptions.syntaxOnly,
         skipPanelIds: parsedOptions.skipPanelIds,
         datasourceTypes: parsedOptions.datasourceTypes,
         skipTypes: parsedOptions.skipTypes,
@@ -68,7 +71,7 @@ export function buildValidateCommand(app: CommandAppContext) {
         for (const item of items) {
           printMessage(
             ctx,
-            `  Panel: ${item.panelTitle} (id=${item.panelId}) / refId=${item.refId}${item.datasourceType ? ` / type=${item.datasourceType}` : ""}\n  ERROR: query error — ${item.message}`,
+            `  Panel: ${item.panelTitle} (id=${item.panelId}) / refId=${item.refId}${item.datasourceType ? ` / type=${item.datasourceType}` : ""}\n  ERROR: ${item.kind === "promql-syntax" ? "promql syntax" : "query error"} — ${item.message}`,
           );
         }
         printMessage(ctx, `  Summary: ${items.length} errors across ${totalPanels} panels`);

@@ -22,5 +22,19 @@
         "noExplicitAny": "error"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/promql/parser.js", "src/promql/parser.d.ts"],
+      "formatter": {
+        "enabled": false
+      },
+      "linter": {
+        "enabled": false
+      },
+      "assist": {
+        "enabled": false
+      }
+    }
+  ]
 }

@@ -21,6 +21,7 @@ import {
   resolveTemplateValue,
   type TemplateVars,
 } from "./lib/template-vars";
+import { PromQLParseError, validatePromQLSyntax } from "./promql";
 import {
   CliConfigSchema,
   CliName,
@@ -1102,7 +1103,7 @@ type ValidateIssueBase = {
   message: string;
   datasourceUid?: string;
   datasourceType?: string;
-  kind?: "query-error" | "no-data" | "skip";
+  kind?: "query-error" | "promql-syntax" | "no-data" | "skip";
 };
 
 type ValidateWarning = ValidateIssueBase;
@@ -1312,8 +1313,7 @@ function collectPanels(input: unknown): JsonObject[] {
 function collectDashboards(bundle: ExportBundle): JsonObject[] {
   return asObjectArray(bundle.dashboards)
     .map((entry) => {
-      const dashboard = getObjectField(entry, "dashboard");
-      if (!dashboard) return undefined;
+      const dashboard = getObjectField(entry, "dashboard") || entry;
       const title = asString(entry.title) || asString(dashboard.title);
       const uid = asString(entry.uid) || asString(dashboard.uid);
       return {
@@ -1326,6 +1326,63 @@ function collectDashboards(bundle: ExportBundle): JsonObject[] {
     .filter((v): v is JsonObject => Boolean(v));
 }
 
+function isPrometheusDatasourceType(value: string | undefined) {
+  return String(value || "").toLowerCase() === "prometheus";
+}
+
+function promQLSyntaxIssue(
+  dashboardTitle: string,
+  panel: JsonObject,
+  target: DashboardTarget,
+  message: string,
+  datasourceUid?: string,
+  datasourceType?: string,
+): ValidateError {
+  return {
+    dashboardTitle,
+    panelTitle: asString(panel.title) || "(untitled panel)",
+    panelId: Number.parseInt(String(panel.id || "0"), 10) || 0,
+    refId: target.refId,
+    datasourceUid,
+    datasourceType,
+    kind: "promql-syntax",
+    message,
+  };
+}
+
+function validatePanelTargetPromQLSyntax(
+  dashboardTitle: string,
+  panel: JsonObject,
+  target: DashboardTarget,
+  datasourceUid?: string,
+  datasourceType?: string,
+): ValidateError | undefined {
+  const expr = asString(target.raw.expr);
+  if (!expr) return undefined;
+  try {
+    validatePromQLSyntax(expr);
+    return undefined;
+  } catch (error) {
+    const message = error instanceof PromQLParseError ? error.message : String(error);
+    return promQLSyntaxIssue(dashboardTitle, panel, target, message, datasourceUid, datasourceType);
+  }
+}
+
+function validateDashboardPromQLSyntax(dashboards: JsonObject[]): ValidateIssueBase[] {
+  const errors: ValidateIssueBase[] = [];
+  for (const dashboardEntry of dashboards) {
+    const dashboard = getObjectField(dashboardEntry, "dashboard") || dashboardEntry;
+    const dashboardTitle = dashboardTitleOf(dashboardEntry);
+    for (const panel of collectPanels(dashboard.panels)) {
+      for (const target of extractPanelTargets(panel)) {
+        const issue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, undefined, "prometheus");
+        if (issue) errors.push(issue);
+      }
+    }
+  }
+  return errors;
+}
+
 async function validateDashboards(
   ctx: RuntimeContext,
   dashboards: JsonObject[],
@@ -1336,6 +1393,7 @@ async function validateDashboards(
     intervalMs: number;
     concurrency: number;
     failFast: boolean;
+    syntaxOnly?: boolean;
     skipPanelIds: number[];
     onlyPanelIds?: number[];
     vars: Record<string, string>;
@@ -1407,9 +1465,33 @@ async function validateDashboards(
         dashboardVars,
       );
 
-      const datasourceType = datasourceUid ? datasourceTypeByUid.get(datasourceUid) : undefined;
+      const targetDatasourceType = asString(targetDatasource?.type) || asString(panelDatasource?.type);
+      const datasourceType = datasourceUid
+        ? datasourceTypeByUid.get(datasourceUid) || targetDatasourceType
+        : targetDatasourceType;
       if (datasourceType && onlyDatasourceTypes.size > 0 && !onlyDatasourceTypes.has(datasourceType)) return;
       if (datasourceType && skipDatasourceTypes.has(datasourceType)) return;
+
+      const expr = asString(target.raw.expr);
+      if (isPrometheusDatasourceType(datasourceType)) {
+        const syntaxIssue = validatePanelTargetPromQLSyntax(
+          dashboardTitle,
+          panel,
+          target,
+          datasourceUid,
+          datasourceType,
+        );
+        if (syntaxIssue) {
+          errors.push(syntaxIssue);
+          if (options.failFast) {
+            throw new Error(
+              `PromQL syntax validation failed at ${dashboardTitle} / ${String(panel.title || panelId)} / ${target.refId}`,
+            );
+          }
+          return;
+        }
+      }
+      if (options.syntaxOnly) return;
 
       if (!datasourceUid) {
         warnings.push({
@@ -1424,7 +1506,6 @@ async function validateDashboards(
       }
 
       const rawSql = asString(target.raw.rawSql) || asString(target.raw.rawQuery);
-      const expr = asString(target.raw.expr);
       if (!rawSql && !expr) return;
 
       const maxDataPoints = Number.parseInt(String(target.raw.maxDataPoints || "1000"), 10) || 1000;
@@ -1965,6 +2046,7 @@ export async function run() {
     renderFramesText,
     collectDashboards,
     validateDashboards,
+    validateDashboardPromQLSyntax,
     parseJsonLike,
     deepMerge,
     parseSetExpr,
@@ -2164,5 +2246,6 @@ export const __test__ = {
   getPathValue,
   setPathValue,
   deepMerge,
+  validateDashboardPromQLSyntax,
   writeJson,
 };
