@@ -42,6 +42,8 @@ wode-gf-cli --help
 pnpm run lint
 pnpm run build
 pnpm run check
+just promql-generate
+just promql-test
 ```
 
 ## Configuration
@@ -165,6 +167,7 @@ wode-gf-cli --context local import local/grafana-export
 wode-gf-cli --context local validate ./grafana --concurrency 4 --var env=prod
 wode-gf-cli --context local validate ./grafana --concurrency 2 --timeout 60000
 wode-gf-cli --context local validate ./grafana --interval-ms 60000
+wode-gf-cli --context local validate ./grafana --syntax-only --promql-macro-mode keep
 
 # quick datasource queries (uid or name)
 wode-gf-cli --context local query xyz-mysql --sql 'select 1'
@@ -211,6 +214,11 @@ wode-gf-cli export -o local/grafana-export
 - `--expr`: quick expression query field (`expr`)
 - `--query path=value`: patch any field in query object (repeatable)
 - `--query-json` / `--query-file`: full query object passthrough
+
+PromQL local checks:
+- `validate --syntax-only` runs local PromQL preflight only and does not call Grafana.
+- `push` / `import` check PromQL before writing dashboards; use `--skip-promql-check` only when you need to bypass local syntax checks.
+- `--promql-macro-mode keep|preset|eval|strict` controls Grafana macro/template handling. Default `keep` accepts raw dashboard expressions. `preset` substitutes syntax-safe placeholders, `eval` uses `--var` / time context when available and warns on fallbacks, and `strict` rejects Grafana placeholders before parsing.
 
 Resource/API notes:
 - Alerting resources are available through `alert-rule`, `contact-point`, and `policy`; export/import can include `alert-rules,contact-points,policies`.

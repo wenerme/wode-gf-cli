@@ -22,7 +22,12 @@ import {
   resolveTemplateValue,
   type TemplateVars,
 } from "./lib/template-vars";
-import { PromQLParseError, validatePromQLSyntax } from "./promql";
+import { PromQLParseError } from "./promql";
+import {
+  GrafanaPromQLMacroError,
+  type GrafanaPromQLMacroMode,
+  validateGrafanaPromQLSyntax,
+} from "./promql/grafana";
 import {
   CliConfigSchema,
   CliName,
@@ -1104,7 +1109,7 @@ type ValidateIssueBase = {
   message: string;
   datasourceUid?: string;
   datasourceType?: string;
-  kind?: "query-error" | "promql-syntax" | "no-data" | "skip";
+  kind?: "query-error" | "promql-syntax" | "promql-macro" | "no-data" | "skip";
 };
 
 type ValidateWarning = ValidateIssueBase;
@@ -1355,28 +1360,84 @@ function validatePanelTargetPromQLSyntax(
   dashboardTitle: string,
   panel: JsonObject,
   target: DashboardTarget,
-  datasourceUid?: string,
-  datasourceType?: string,
+  options: {
+    macroMode?: GrafanaPromQLMacroMode;
+    vars?: TemplateVars;
+    fromMs?: number;
+    toMs?: number;
+    interval?: string;
+    intervalMs?: number;
+    rateInterval?: string;
+    rangeMs?: number;
+    datasourceUid?: string;
+    datasourceType?: string;
+    onWarning?: (message: string) => void;
+  } = {},
 ): ValidateError | undefined {
   const expr = asString(target.raw.expr);
   if (!expr) return undefined;
   try {
-    validatePromQLSyntax(expr);
+    const result = validateGrafanaPromQLSyntax(expr, {
+      macroMode: options.macroMode,
+      vars: options.vars,
+      fromMs: options.fromMs,
+      toMs: options.toMs,
+      interval: options.interval,
+      intervalMs: options.intervalMs,
+      rateInterval: options.rateInterval,
+      rangeMs: options.rangeMs,
+    });
+    for (const warning of result.warnings) options.onWarning?.(warning);
     return undefined;
   } catch (error) {
-    const message = error instanceof PromQLParseError ? error.message : String(error);
-    return promQLSyntaxIssue(dashboardTitle, panel, target, message, datasourceUid, datasourceType);
+    const message =
+      error instanceof PromQLParseError || error instanceof GrafanaPromQLMacroError
+        ? error.message
+        : String(error);
+    return promQLSyntaxIssue(
+      dashboardTitle,
+      panel,
+      target,
+      message,
+      options.datasourceUid,
+      options.datasourceType,
+    );
   }
 }
 
-function validateDashboardPromQLSyntax(dashboards: JsonObject[]): ValidateIssueBase[] {
+function validateDashboardPromQLSyntax(
+  dashboards: JsonObject[],
+  options: {
+    macroMode?: GrafanaPromQLMacroMode;
+    vars?: TemplateVars;
+    fromMs?: number;
+    toMs?: number;
+    intervalMs?: number;
+  } = {},
+): ValidateIssueBase[] {
   const errors: ValidateIssueBase[] = [];
+  const fromMs = options.fromMs;
+  const toMs = options.toMs;
+  const rangeMs = fromMs !== undefined && toMs !== undefined ? Math.max(0, toMs - fromMs) : undefined;
+  const intervalMs = options.intervalMs ?? 60_000;
   for (const dashboardEntry of dashboards) {
     const dashboard = getObjectField(dashboardEntry, "dashboard") || dashboardEntry;
     const dashboardTitle = dashboardTitleOf(dashboardEntry);
+    const vars = {
+      ...extractTemplatingValues(dashboard),
+      ...(options.vars || {}),
+    };
     for (const panel of collectPanels(dashboard.panels)) {
       for (const target of extractPanelTargets(panel)) {
-        const issue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, undefined, "prometheus");
+        const issue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, {
+          macroMode: options.macroMode,
+          vars,
+          fromMs,
+          toMs,
+          intervalMs,
+          rangeMs,
+          datasourceType: "prometheus",
+        });
         if (issue) errors.push(issue);
       }
     }
@@ -1398,6 +1459,7 @@ async function validateDashboards(
     skipPanelIds: number[];
     onlyPanelIds?: number[];
     vars: Record<string, string>;
+    promqlMacroMode?: GrafanaPromQLMacroMode;
   },
 ) {
   const warnings: ValidateWarning[] = [];
@@ -1475,13 +1537,29 @@ async function validateDashboards(
 
       const expr = asString(target.raw.expr);
       if (isPrometheusDatasourceType(datasourceType)) {
-        const syntaxIssue = validatePanelTargetPromQLSyntax(
-          dashboardTitle,
-          panel,
-          target,
+        const syntaxIssue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, {
+          macroMode: options.promqlMacroMode,
+          vars: dashboardVars,
+          fromMs,
+          toMs,
+          intervalMs: options.intervalMs,
+          rangeMs,
+          rateInterval: msToInterval(Math.max(options.intervalMs * 4, 240_000)),
           datasourceUid,
           datasourceType,
-        );
+          onWarning: (message) => {
+            warnings.push({
+              dashboardTitle,
+              panelTitle: asString(panel.title) || "(untitled panel)",
+              panelId,
+              refId: target.refId,
+              datasourceUid,
+              datasourceType,
+              kind: "promql-macro",
+              message,
+            });
+          },
+        });
         if (syntaxIssue) {
           errors.push(syntaxIssue);
           if (options.failFast) {

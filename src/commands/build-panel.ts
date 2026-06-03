@@ -5,6 +5,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { GrafanaClient } from "../client";
 import { asObject, asObjectArray, asString, getObjectField } from "../lib/json-narrow";
+import { parseGrafanaPromQLMacroMode } from "../promql/grafana";
 import { type ResourceSelector, ResourceSelectorSchema } from "../schema";
 import { buildRenderPanelPath, parsePositiveInt } from "../utils";
 import type { CliContext, CommandAppContext } from "./runtime";
@@ -484,6 +485,7 @@ export function buildPanelCommand(app: CommandAppContext) {
     .option("--timeout <ms>", "request timeout milliseconds for validate", "60000")
     .option("--interval-ms <ms>", "grafana built-in interval in milliseconds", "60000")
     .option("--fail-fast", "stop when first validation error found")
+    .option("--promql-macro-mode <mode>", "PromQL Grafana macro handling: keep|preset|eval|strict", "keep")
     .option("--var <expr>", "variable override key=value, repeatable", collectList, [])
     .action(async function panelValidateAction(ref: string, options) {
       const ctx = runtime.parseCommonOptions(this as unknown as Command);
@@ -514,6 +516,7 @@ export function buildPanelCommand(app: CommandAppContext) {
           intervalMs: parsePositiveInt(options.intervalMs, 60_000),
           concurrency: 1,
           failFast: Boolean(options.failFast),
+          promqlMacroMode: parseGrafanaPromQLMacroMode(options.promqlMacroMode),
           skipPanelIds: [],
           onlyPanelIds: [parsed.panelId],
           vars: varOverrides,

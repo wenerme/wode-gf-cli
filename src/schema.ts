@@ -94,6 +94,9 @@ export const RenderPanelOptionsSchema = z.object({
 });
 export type RenderPanelOptions = z.infer<typeof RenderPanelOptionsSchema>;
 
+export const PromQLMacroModeSchema = z.enum(["keep", "preset", "eval", "strict"]);
+export type PromQLMacroMode = z.infer<typeof PromQLMacroModeSchema>;
+
 export const ValidateOptionsSchema = z.object({
   from: z.string().min(1),
   to: z.string().min(1),
@@ -105,6 +108,7 @@ export const ValidateOptionsSchema = z.object({
   skipTypes: z.array(z.string()).default([]),
   failFast: z.boolean(),
   syntaxOnly: z.boolean().default(false),
+  promqlMacroMode: PromQLMacroModeSchema.default("keep"),
   vars: z.array(z.string()),
 });
 export type ValidateOptions = z.infer<typeof ValidateOptionsSchema>;

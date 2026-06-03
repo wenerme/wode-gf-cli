@@ -21,6 +21,7 @@ export function buildValidateCommand(app: CommandAppContext) {
     .option("--concurrency <n>", "request concurrency", "4")
     .option("--fail-fast", "stop when first validation error found")
     .option("--syntax-only", "only run local syntax checks; do not call Grafana /api/ds/query")
+    .option("--promql-macro-mode <mode>", "PromQL Grafana macro handling: keep|preset|eval|strict", "keep")
     .option("--var <expr>", "variable override key=value, repeatable", collectList, [])
     .action(async function validateAction(sources: string[] | undefined, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
@@ -37,6 +38,7 @@ export function buildValidateCommand(app: CommandAppContext) {
         skipTypes: options.skipType || [],
         failFast: Boolean(options.failFast),
         syntaxOnly: Boolean(options.syntaxOnly),
+        promqlMacroMode: options.promqlMacroMode,
         vars: options.var || [],
       });
 
@@ -52,6 +54,7 @@ export function buildValidateCommand(app: CommandAppContext) {
         concurrency: parsedOptions.concurrency,
         failFast: parsedOptions.failFast,
         syntaxOnly: parsedOptions.syntaxOnly,
+        promqlMacroMode: parsedOptions.promqlMacroMode,
         skipPanelIds: parsedOptions.skipPanelIds,
         datasourceTypes: parsedOptions.datasourceTypes,
         skipTypes: parsedOptions.skipTypes,
