@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { GrafanaClient } from "../client";
+import { parseGrafanaPromQLMacroMode } from "../promql/grafana";
 import {
   type ExportBundle,
   type ResourceName,
@@ -151,6 +152,7 @@ export function buildSyncCommands(app: CommandAppContext) {
     .option("--overwrite", "overwrite existing dashboards when importing", true)
     .option("--no-overwrite", "do not overwrite existing dashboards")
     .option("--skip-promql-check", "skip local PromQL syntax checks before importing dashboards")
+    .option("--promql-macro-mode <mode>", "PromQL Grafana macro handling: keep|preset|eval|strict", "keep")
     .action(async function importAction(sources: string[] | undefined, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
       const fallbackType = parseResourceAlias(options.type);
@@ -168,7 +170,9 @@ export function buildSyncCommands(app: CommandAppContext) {
       if (resources.length === 0) throw new Error("No importable resources found in sources");
       merged.resources = dedupeResources(resources);
       if (resources.includes("dashboards") && !options.skipPromqlCheck) {
-        const promqlErrors = validateDashboardPromQLSyntax(collectDashboards(merged));
+        const promqlErrors = validateDashboardPromQLSyntax(collectDashboards(merged), {
+          macroMode: parseGrafanaPromQLMacroMode(options.promqlMacroMode),
+        });
         if (promqlErrors.length > 0) {
           throw new Error(
             `PromQL syntax check failed before import: ${promqlErrors
@@ -211,6 +215,7 @@ export function buildSyncCommands(app: CommandAppContext) {
     .option("--overwrite", "overwrite existing dashboards when pushing", true)
     .option("--no-overwrite", "do not overwrite existing dashboards")
     .option("--skip-promql-check", "skip local PromQL syntax checks before pushing dashboards")
+    .option("--promql-macro-mode <mode>", "PromQL Grafana macro handling: keep|preset|eval|strict", "keep")
     .action(async function pushAction(sources: string[] | undefined, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
       const fallbackType = parseResourceAlias(options.type);
@@ -228,7 +233,9 @@ export function buildSyncCommands(app: CommandAppContext) {
       if (resources.length === 0) throw new Error("No pushable resources found in sources");
       merged.resources = dedupeResources(resources);
       if (resources.includes("dashboards") && !options.skipPromqlCheck) {
-        const promqlErrors = validateDashboardPromQLSyntax(collectDashboards(merged));
+        const promqlErrors = validateDashboardPromQLSyntax(collectDashboards(merged), {
+          macroMode: parseGrafanaPromQLMacroMode(options.promqlMacroMode),
+        });
         if (promqlErrors.length > 0) {
           throw new Error(
             `PromQL syntax check failed before push: ${promqlErrors

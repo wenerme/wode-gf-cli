@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import type { GrafanaClient } from "../client";
+import type { GrafanaPromQLMacroMode } from "../promql/grafana";
 import type { ExportBundle, ResourceName, ResourceSelector } from "../schema";
 
 type JsonObject = Record<string, unknown>;
@@ -31,7 +32,7 @@ export type ValidateIssue = {
   message: string;
   datasourceUid?: string;
   datasourceType?: string;
-  kind?: "query-error" | "promql-syntax" | "no-data" | "skip";
+  kind?: "query-error" | "promql-syntax" | "promql-macro" | "no-data" | "skip";
 };
 
 export type DiffItem = {
@@ -107,6 +108,7 @@ export type CliRuntime = {
       datasourceTypes?: string[];
       skipTypes?: string[];
       vars: Record<string, string>;
+      promqlMacroMode?: GrafanaPromQLMacroMode;
     },
   ) => Promise<{ errors: ValidateIssue[]; warnings: ValidateIssue[] }>;
   parseJsonLike: (input: string) => unknown;
@@ -114,7 +116,16 @@ export type CliRuntime = {
   parseSetExpr: (expr: string, defaultPath?: string) => { path: string; value: unknown };
   createEmptyBundle: () => ExportBundle;
   setSingleResource: (bundle: ExportBundle, resource: ResourceName, item: unknown) => void;
-  validateDashboardPromQLSyntax: (dashboards: JsonObject[]) => ValidateIssue[];
+  validateDashboardPromQLSyntax: (
+    dashboards: JsonObject[],
+    options?: {
+      macroMode?: GrafanaPromQLMacroMode;
+      vars?: Record<string, string>;
+      fromMs?: number;
+      toMs?: number;
+      intervalMs?: number;
+    },
+  ) => ValidateIssue[];
   writeJson: (file: string, data: unknown, pretty?: boolean) => void;
   deleteSingleResource: (
     ctx: CliContext,

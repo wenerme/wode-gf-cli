@@ -86,6 +86,13 @@ ${formatRows([
   ["--sql / --expr", "quick path for common datasource query fields"],
   ["--query path=value", "patch queries[0] fields (repeatable)"],
   ["--query-json / --query-file", "full query object passthrough (--query-file - for stdin)"],
+])}
+
+PROMQL CHECKS
+${formatRows([
+  ["validate --syntax-only", "local PromQL preflight without /api/ds/query"],
+  ["--promql-macro-mode", "keep (default) | preset | eval | strict"],
+  ["push/import", "run PromQL preflight by default; opt out with --skip-promql-check"],
 ])}`;
 }
 

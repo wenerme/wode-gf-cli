@@ -42,6 +42,8 @@ wode-gf-cli --help
 pnpm run lint
 pnpm run build
 pnpm run check
+just promql-generate
+just promql-test
 ```
 
 ## 配置
@@ -166,6 +168,7 @@ wode-gf-cli --context local import local/grafana-export
 wode-gf-cli --context local validate ./grafana --concurrency 4 --var env=prod
 wode-gf-cli --context local validate ./grafana --concurrency 2 --timeout 60000
 wode-gf-cli --context local validate ./grafana --interval-ms 60000
+wode-gf-cli --context local validate ./grafana --syntax-only --promql-macro-mode keep
 
 # 快速数据源查询（uid 或 name）
 wode-gf-cli --context local query xyz-mysql --sql 'select 1'
@@ -206,6 +209,12 @@ wode-gf-cli --context my-prod render panel --dashboard-uid <uid> --panel-id 1 --
 - `--expr`：快捷表达式查询字段（`expr`）
 - `--query path=value`：对 query 对象任意字段打补丁（可重复）
 - `--query-json` / `--query-file`：完整 query 对象透传
+
+PromQL 本地检查：
+
+- `validate --syntax-only` 只运行本地 PromQL 预检查，不调用 Grafana。
+- `push` / `import` 写入 dashboard 前会先检查 PromQL；仅在需要绕过本地语法检查时使用 `--skip-promql-check`。
+- `--promql-macro-mode keep|preset|eval|strict` 控制 Grafana 宏/模板处理。默认 `keep` 接受原始 dashboard 表达式；`preset` 使用语法安全占位值；`eval` 在可用时使用 `--var` / 时间上下文并对 fallback 给出 warning；`strict` 在解析前拒绝 Grafana placeholder。
 
 资源/API 说明：
 
