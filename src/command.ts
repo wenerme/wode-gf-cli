@@ -19,6 +19,7 @@ DISCOVER
 ${formatRows([
   ["list", "list dashboards / folders / connections"],
   ["query", "inspect one resource, or run datasource queries"],
+  ["api", "call raw Grafana API paths"],
   ["export", "pull remote resources into local split JSON"],
   ["pull", "refresh one local JSON file from remote"],
   ["context", "list | current | use <NAME> | set KEY=VALUE"],
@@ -40,6 +41,7 @@ ${formatRows([
   ["patch", "patch one remote resource with path=value updates"],
   ["panel / p", "patch DASH/PANEL | edit DASH/PANEL | render DASH/PANEL"],
   ["delete", "delete one remote resource"],
+  ["api", "escape hatch for unsupported Grafana APIs"],
 ])}
 
 RESOURCE COMMANDS
@@ -52,7 +54,7 @@ ${formatRows([
   ],
   ["alert-rule", "get <ID> | delete <ID>"],
   ["contact-point", "get <ID> | delete <ID>"],
-  ["policy", "get <ID>"],
+  ["policy", "get"],
   [
     "panel / p",
     "list DASH | get DASH/PANEL | inspect DASH/PANEL | patch DASH/PANEL | edit DASH/PANEL | validate DASH/PANEL | render DASH/PANEL",
@@ -67,6 +69,7 @@ ${formatRows([
   ["command", `${cliName} <command> [args] [--context <name>] [--output text|json] [--dry-run]`],
   ["resource", `${cliName} <resource> <action> [args]`],
   ["example", `${cliName} query dashboard --uid <uid> --context local --json`],
+  ["api", `${cliName} api /api/v1/provisioning/policies --context local`],
 ])}
 
 WORKFLOW

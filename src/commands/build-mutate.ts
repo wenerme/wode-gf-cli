@@ -808,28 +808,25 @@ export function buildMutateCommands(app: CommandAppContext) {
         });
     }
 
-    scoped
-      .command("get <ID>")
-      .description(`Get ${entry.cmd} by id or uid as JSON`)
-      .action(async function scopedGetAction(idOrUid: string) {
-        const ctx = parseCommonOptions(this as unknown as Command);
-        const remote = await fetchResources(new GrafanaClient(ctx), [entry.resource]);
-        const selected =
-          entry.resource === "folders"
-            ? selectResourceByToken(
-                resourceItems(remote, entry.resource),
-                entry.resource,
-                idOrUid,
-                selectResource,
-              )
-            : selectResource(
-                resourceItems(remote, entry.resource),
-                entry.resource,
-                parseIdOrUidSelector(idOrUid),
-                false,
-              );
-        console.log(JSON.stringify(selected, null, 2));
-      });
+    const getCommand =
+      entry.resource === "policies"
+        ? scoped.command("get [ID]").description("Get root notification policy tree as JSON")
+        : scoped.command("get <ID>").description(`Get ${entry.cmd} by id, uid, name, or title as JSON`);
+
+    getCommand.action(async function scopedGetAction(idOrUid: string | undefined) {
+      const ctx = parseCommonOptions(this as unknown as Command);
+      const remote = await fetchResources(new GrafanaClient(ctx), [entry.resource]);
+      const selected =
+        entry.resource === "policies"
+          ? resourceItems(remote, entry.resource)[0]
+          : selectResourceByToken(
+              resourceItems(remote, entry.resource),
+              entry.resource,
+              String(idOrUid || ""),
+              selectResource,
+            );
+      console.log(JSON.stringify(selected, null, 2));
+    });
 
     if (entry.resource !== "policies") {
       scoped
@@ -838,28 +835,38 @@ export function buildMutateCommands(app: CommandAppContext) {
         .option("--json", "print selected resource json")
         .action(async function scopedDeleteAction(idOrUid: string, options) {
           const ctx = parseCommonOptions(this as unknown as Command);
-          const selector = entry.resource === "folders" ? undefined : parseIdOrUidSelector(idOrUid);
-          const selected =
-            entry.resource === "folders"
-              ? await (async () => {
-                  const client = new GrafanaClient(ctx);
-                  const remote = await fetchResources(client, ["folders"]);
-                  const folder = selectResourceByToken(
-                    resourceItems(remote, "folders"),
-                    "folders",
-                    idOrUid,
-                    selectResource,
-                  );
-                  const folderObj = asObject(folder);
-                  const uid = asString(folderObj?.uid);
-                  if (!uid) throw new Error("Selected folder has no uid, cannot delete");
-                  return deleteSingleResource(
-                    ctx,
-                    "folders",
-                    ResourceSelectorSchema.parse({ uid, where: [] }),
-                  );
-                })()
-              : await deleteSingleResource(ctx, entry.resource, selector);
+          const selected = await (async () => {
+            if (entry.resource === "folders") {
+              const client = new GrafanaClient(ctx);
+              const remote = await fetchResources(client, ["folders"]);
+              const folder = selectResourceByToken(
+                resourceItems(remote, "folders"),
+                "folders",
+                idOrUid,
+                selectResource,
+              );
+              const folderObj = asObject(folder);
+              const uid = asString(folderObj?.uid);
+              if (!uid) throw new Error("Selected folder has no uid, cannot delete");
+              return deleteSingleResource(ctx, "folders", ResourceSelectorSchema.parse({ uid, where: [] }));
+            }
+
+            const remote = await fetchResources(new GrafanaClient(ctx), [entry.resource]);
+            const target = selectResourceByToken(
+              resourceItems(remote, entry.resource),
+              entry.resource,
+              idOrUid,
+              selectResource,
+            );
+            const targetObj = asObject(target);
+            const uid = asString(targetObj?.uid);
+            if (!uid) throw new Error(`Selected ${entry.resource} has no uid, cannot delete`);
+            return deleteSingleResource(
+              ctx,
+              entry.resource,
+              ResourceSelectorSchema.parse({ uid, where: [] }),
+            );
+          })();
           if (options.json || ctx.dryRun) {
             console.log(JSON.stringify(selected, null, 2));
           }

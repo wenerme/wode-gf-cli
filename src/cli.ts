@@ -4,6 +4,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { GrafanaClient, mapLimit } from "./client";
 import { createCommand } from "./command";
+import { buildApiCommand } from "./commands/build-api";
 import { buildListAndRenderCommands } from "./commands/build-list-render";
 import { buildMutateCommands } from "./commands/build-mutate";
 import { buildPanelCommand } from "./commands/build-panel";
@@ -1986,7 +1987,7 @@ async function deleteSingleResource(ctx: RuntimeContext, resource: ResourceName,
       "DELETE",
       `/api/v1/provisioning/alert-rules/${encodeURIComponent(uid)}`,
       undefined,
-      [204, 200],
+      [202, 204, 200],
     );
     return selected;
   }
@@ -1995,7 +1996,7 @@ async function deleteSingleResource(ctx: RuntimeContext, resource: ResourceName,
       "DELETE",
       `/api/v1/provisioning/contact-points/${encodeURIComponent(uid)}`,
       undefined,
-      [204, 200],
+      [202, 204, 200],
     );
     return selected;
   }
@@ -2209,6 +2210,7 @@ export async function run() {
   }
 
   program.addCommand(buildQueryCommand(app));
+  program.addCommand(buildApiCommand(app));
   program.addCommand(buildPanelCommand(app));
 
   for (const command of buildMutateCommands(app)) {
