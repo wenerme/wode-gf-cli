@@ -1,8 +1,8 @@
 import type { GrafanaCliContext } from "./schema";
 
-type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
 type QueryParams = Record<string, string | number | boolean | null | undefined>;
-type ResponseMode = "auto" | "bytes";
+type ResponseMode = "auto" | "bytes" | "text";
 
 type RequestInput<I, P extends QueryParams> = {
   name?: string;
@@ -12,6 +12,7 @@ type RequestInput<I, P extends QueryParams> = {
   method?: HttpMethod;
   headers?: HeadersInit;
   body?: I;
+  rawBody?: string | Uint8Array;
   params?: P;
   timeoutMs?: number;
   parseAs?: ResponseMode;
@@ -56,7 +57,7 @@ export async function request<O = unknown, I = unknown, P extends QueryParams = 
     const response = await fetcher(targetUrl, {
       method,
       headers,
-      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+      body: input.rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body)),
       signal: controller.signal,
     });
 
@@ -70,6 +71,14 @@ export async function request<O = unknown, I = unknown, P extends QueryParams = 
     }
 
     const text = await response.text();
+    if (parseAs === "text") {
+      return {
+        status: response.status,
+        headers: response.headers,
+        data: text,
+      };
+    }
+
     const contentType = response.headers.get("content-type") || "";
     const data = contentType.includes("application/json") && text ? (JSON.parse(text) as O) : text;
 
@@ -81,6 +90,18 @@ export async function request<O = unknown, I = unknown, P extends QueryParams = 
   } finally {
     clearTimeout(timer);
   }
+}
+
+export function grafanaAuthHeaders(
+  ctx: Pick<GrafanaCliContext, "apiKey" | "username" | "password">,
+): Record<string, string> {
+  if (ctx.apiKey) return { Authorization: `Bearer ${ctx.apiKey}` };
+  if (ctx.username) {
+    return {
+      Authorization: `Basic ${Buffer.from(`${ctx.username}:${ctx.password || ""}`).toString("base64")}`,
+    };
+  }
+  return {};
 }
 
 export class GrafanaClient {
@@ -113,13 +134,7 @@ export class GrafanaClient {
       method,
       headers: {
         Accept: "application/json",
-        ...(this.apiKey
-          ? { Authorization: `Bearer ${this.apiKey}` }
-          : this.username
-            ? {
-                Authorization: `Basic ${Buffer.from(`${this.username}:${this.password || ""}`).toString("base64")}`,
-              }
-            : {}),
+        ...grafanaAuthHeaders(this),
       },
       body,
       timeoutMs: this.timeoutMs,
@@ -145,13 +160,7 @@ export class GrafanaClient {
       method,
       headers: {
         Accept: "application/json",
-        ...(this.apiKey
-          ? { Authorization: `Bearer ${this.apiKey}` }
-          : this.username
-            ? {
-                Authorization: `Basic ${Buffer.from(`${this.username}:${this.password || ""}`).toString("base64")}`,
-              }
-            : {}),
+        ...grafanaAuthHeaders(this),
       },
       body,
       timeoutMs: this.timeoutMs,
@@ -168,13 +177,7 @@ export class GrafanaClient {
       method,
       headers: {
         Accept: "*/*",
-        ...(this.apiKey
-          ? { Authorization: `Bearer ${this.apiKey}` }
-          : this.username
-            ? {
-                Authorization: `Basic ${Buffer.from(`${this.username}:${this.password || ""}`).toString("base64")}`,
-              }
-            : {}),
+        ...grafanaAuthHeaders(this),
       },
       timeoutMs: this.timeoutMs,
       parseAs: "bytes",

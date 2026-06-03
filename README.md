@@ -174,6 +174,12 @@ wode-gf-cli --context local query my-cls --query 'serviceType=logService' --quer
 # list resources quickly
 wode-gf-cli --context local list dashboard
 wode-gf-cli --context local list connection --json
+wode-gf-cli --context local list alert-rule --json
+wode-gf-cli --context local policy get
+
+# raw Grafana API escape hatch
+wode-gf-cli --context local api /api/user --output json
+wode-gf-cli --context local api /api/search --query type=dash-db --query limit=1 --output json
 
 # full query object passthrough
 wode-gf-cli --context local query my-cls --query-file ./local/cls-query.json --json
@@ -205,6 +211,10 @@ wode-gf-cli export -o local/grafana-export
 - `--expr`: quick expression query field (`expr`)
 - `--query path=value`: patch any field in query object (repeatable)
 - `--query-json` / `--query-file`: full query object passthrough
+
+Resource/API notes:
+- Alerting resources are available through `alert-rule`, `contact-point`, and `policy`; export/import can include `alert-rules,contact-points,policies`.
+- `api <path|url>` is a raw Grafana API escape hatch using the active context auth. It supports `-X`, `-H`, `--query`, `-f`, `--json`, `-d`, `--data-file`, `-i`, `--raw`, `--fail`, and `-o`.
 
 ## Single JSON Import
 

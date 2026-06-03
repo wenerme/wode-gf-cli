@@ -175,6 +175,12 @@ wode-gf-cli --context local query my-cls --query 'serviceType=logService' --quer
 # 快速列出资源
 wode-gf-cli --context local list dashboard
 wode-gf-cli --context local list connection --json
+wode-gf-cli --context local list alert-rule --json
+wode-gf-cli --context local policy get
+
+# 原始 Grafana API 逃生口
+wode-gf-cli --context local api /api/user --output json
+wode-gf-cli --context local api /api/search --query type=dash-db --query limit=1 --output json
 
 # 完整 query 对象透传
 wode-gf-cli --context local query my-cls --query-file ./local/cls-query.json --json
@@ -200,6 +206,11 @@ wode-gf-cli --context my-prod render panel --dashboard-uid <uid> --panel-id 1 --
 - `--expr`：快捷表达式查询字段（`expr`）
 - `--query path=value`：对 query 对象任意字段打补丁（可重复）
 - `--query-json` / `--query-file`：完整 query 对象透传
+
+资源/API 说明：
+
+- Alerting 资源可通过 `alert-rule`、`contact-point`、`policy` 管理；export/import 可包含 `alert-rules,contact-points,policies`。
+- `api <path|url>` 是原始 Grafana API 逃生口，使用当前 context 认证，支持 `-X`、`-H`、`--query`、`-f`、`--json`、`-d`、`--data-file`、`-i`、`--raw`、`--fail`、`-o`。
 
 ## 导入单个 JSON
 

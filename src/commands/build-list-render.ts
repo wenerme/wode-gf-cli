@@ -38,7 +38,7 @@ export function buildListAndRenderCommands(app: CommandAppContext) {
     .action(async function listAction(resourceArg: string, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
       const resource = parseResourceAlias(resourceArg);
-      if (!resource || resource === "policies") {
+      if (!resource) {
         throw new Error(`Unsupported list resource: ${resourceArg}`);
       }
 
