@@ -110,7 +110,9 @@ function renderFolderTree(folders: unknown): string {
 function buildTokenSelectors(resource: ResourceName, token: string): ResourceSelector[] {
   const selectors: ResourceSelector[] = [];
   if (/^\d+$/.test(token)) {
+    // numeric: try as id AND as uid (Grafana new-style uids can be all-digit strings)
     selectors.push(ResourceSelectorSchema.parse({ id: token, uid: token, where: [] }));
+    selectors.push(ResourceSelectorSchema.parse({ uid: token, where: [] }));
   } else {
     selectors.push(ResourceSelectorSchema.parse({ uid: token, where: [] }));
   }
@@ -547,27 +549,17 @@ export function buildMutateCommands(app: CommandAppContext) {
       scoped
         .command("move <ID> <FOLDER>")
         .alias("mv")
-        .description("Move dashboard to another folder")
+        .description("Move dashboard to another folder (ID/FOLDER accept uid, numeric id, or title)")
         .option("--json", "print updated dashboard json")
         .action(async function dashboardMoveAction(idOrUid: string, folderIdOrUid: string, options) {
           const ctx = parseCommonOptions(this as unknown as Command);
           const client = new GrafanaClient(ctx);
           const remote = await fetchResources(client, ["dashboards", "folders"]);
           const dashboard = asObject(
-            selectResource(
-              resourceItems(remote, "dashboards"),
-              "dashboards",
-              parseIdOrUidSelector(idOrUid),
-              false,
-            ),
+            selectResourceByToken(resourceItems(remote, "dashboards"), "dashboards", idOrUid, selectResource),
           );
           const folder = asObject(
-            selectResource(
-              resourceItems(remote, "folders"),
-              "folders",
-              parseIdOrUidSelector(folderIdOrUid),
-              false,
-            ),
+            selectResourceByToken(resourceItems(remote, "folders"), "folders", folderIdOrUid, selectResource),
           );
 
           if (!dashboard) throw new Error("Selected dashboard is not a JSON object");
@@ -619,10 +611,11 @@ export function buildMutateCommands(app: CommandAppContext) {
             await client.request("POST", "/api/dashboards/db", body, [200]);
           }
 
-          if (options.json || ctx.output === "json" || ctx.dryRun) {
+          if (options.json || ctx.output === "json") {
             console.log(JSON.stringify(moved, null, 2));
           }
           printMessage(ctx, `Moved dashboard ${dashboardTitle} to folder ${targetFolderTitle}.`);
+          if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
         });
     }
 
