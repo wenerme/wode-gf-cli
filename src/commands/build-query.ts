@@ -3,7 +3,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { GrafanaClient } from "../client";
 import { asObject, asString, getObjectField } from "../lib/json-narrow";
-import { resolveTemplateString, resolveTemplateValue } from "../lib/template-vars";
+import { buildGrafanaMacros, resolveTemplateString, resolveTemplateValue } from "../lib/template-vars";
 import { type ResourceSelector, ResourceSelectorSchema } from "../schema";
 import { parsePositiveInt, parseVarAssignments } from "../utils";
 import type { CommandAppContext } from "./runtime";
@@ -68,14 +68,21 @@ export function buildQueryCommand(app: CommandAppContext) {
         }
 
         const datasourceIdentifier = resolveQueryDatasourceIdentifier(resourceArg, options, flags);
-        const vars = parseVarAssignments(options.var || []);
+        const userVars = parseVarAssignments(options.var || []);
         const client = new GrafanaClient(ctx);
-        const datasource = await resolveDatasourceByIdentifier(client, datasourceIdentifier, vars);
+        const datasource = await resolveDatasourceByIdentifier(client, datasourceIdentifier, userVars);
         const refId = String(options.refId || "A").trim() || "A";
         const from = String(options.from || "now-1h").trim();
         const to = String(options.to || "now").trim();
-        let queryObject: JsonObject;
+        const intervalMs = parsePositiveInt(options.intervalMs, 60_000);
 
+        // built-in Grafana macros + user vars (user vars take precedence)
+        const vars = {
+          ...buildGrafanaMacros({ from, to, intervalMs }),
+          ...userVars,
+        };
+
+        let queryObject: JsonObject;
         if (options.queryFile) {
           const queryFile = String(options.queryFile).trim();
           const raw =
