@@ -15,6 +15,7 @@ import type { CliRuntime, CommandAppContext } from "./commands/runtime";
 import { calcClsInterval } from "./lib/cls-interval";
 import { asObject, asObjectArray, asString, getObjectField } from "./lib/json-narrow";
 import {
+  buildGrafanaMacros,
   extractTemplatingValues,
   findUnresolvedTemplateTokens,
   resolveDatasourceUid,
@@ -1489,22 +1490,8 @@ async function validateDashboards(
     const dashboardTitle = dashboardTitleOf(dashboardEntry);
     const dashboardVars = {
       ...extractTemplatingValues(dashboard),
+      ...buildGrafanaMacros({ from: fromMs, to: toMs, intervalMs: options.intervalMs }),
       ...options.vars,
-      __from: String(fromMs),
-      __to: String(toMs),
-      __timeFrom: `to_timestamp(${fromMs / 1000})`,
-      __timeTo: `to_timestamp(${toMs / 1000})`,
-      __timeFilter: `"time" BETWEEN to_timestamp(${fromMs / 1000}) AND to_timestamp(${toMs / 1000})`,
-      __interval_ms: String(options.intervalMs),
-      __interval: msToInterval(options.intervalMs),
-      __cls_interval: calcClsInterval(fromMs, toMs),
-      __rate_interval: msToInterval(Math.max(options.intervalMs * 4, 240_000)),
-      __range: `${rangeS}s`,
-      __range_ms: String(rangeMs),
-      __range_s: String(rangeS),
-      __all: "ALL",
-      __user_login: "",
-      __org_name: "",
     };
 
     const panels = collectPanels(dashboard.panels);
@@ -1947,6 +1934,8 @@ async function importResources(
         });
         continue;
       }
+      // X-Disable-Provenance: allow updating rules created via provisioning API (provenance=api)
+      const provHeaders = { "X-Disable-Provenance": "true" };
       if (ruleUid) {
         try {
           await client.request(
@@ -1954,12 +1943,13 @@ async function importResources(
             `/api/v1/provisioning/alert-rules/${encodeURIComponent(ruleUid)}`,
             cleanRule,
             [200],
+            provHeaders,
           );
         } catch {
-          await client.request("POST", "/api/v1/provisioning/alert-rules", cleanRule, [201]);
+          await client.request("POST", "/api/v1/provisioning/alert-rules", cleanRule, [201], provHeaders);
         }
       } else {
-        await client.request("POST", "/api/v1/provisioning/alert-rules", cleanRule, [201]);
+        await client.request("POST", "/api/v1/provisioning/alert-rules", cleanRule, [201], provHeaders);
       }
     }
   }
