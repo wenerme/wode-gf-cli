@@ -1,4 +1,7 @@
 import { asObjectArray, asString, getObjectField } from "./json-narrow";
+import { calcClsInterval } from "./cls-interval";
+import { msToInterval } from "../utils/ms-to-interval";
+import { resolveTimeToMs } from "../utils/resolve-time-to-ms";
 
 type JsonObject = Record<string, unknown>;
 export type TemplateVars = Record<string, string | string[]>;
@@ -175,4 +178,57 @@ export function resolveDatasourceUid(
   const targetResolved = targetDatasourceUid ? resolveTemplateString(targetDatasourceUid, vars) : undefined;
   if (targetResolved && !isMixedDatasourceUid(targetResolved)) return targetResolved;
   return undefined;
+}
+
+// ── Grafana built-in macros ─────────────────────────────────────────────────
+// Macros are Grafana-internal placeholders expanded before query execution,
+// distinct from dashboard Variables (user-configurable, appear in the UI).
+// Examples: $__from, $__to, $__interval, $__cls_interval, $__timeFilter
+// Variables: ${model}, ${provider}, ${cls_ds} etc.
+// Both are resolved via the same string-replace mechanism in wode-gf-cli.
+
+export type GrafanaMacroOptions = {
+  from?: string | number;   // time expression, epoch ms number, or epoch ms string
+  to?: string | number;
+  nowMs?: number;
+  intervalMs?: number;      // panel interval in ms, default 60000
+  maxDataPoints?: number;   // used to calculate $__cls_interval step, default 150
+};
+
+/**
+ * Build Grafana built-in macro values ($__from, $__to, $__interval,
+ * $__cls_interval, $__rate_interval, $__range, $__timeFilter, etc.)
+ * from time range options.
+ *
+ * These are Grafana macros (server-side expanded), not dashboard variables.
+ * wode-gf-cli pre-expands them client-side so queries work in query/validate.
+ *
+ * User-provided variable overrides should be merged on top of the result.
+ */
+export function buildGrafanaMacros(opts: GrafanaMacroOptions = {}): TemplateVars {
+  const nowMs = opts.nowMs ?? Date.now();
+  const fromMs = typeof opts.from === "number" ? opts.from : resolveTimeToMs(opts.from || "now-1h", nowMs);
+  const toMs   = typeof opts.to   === "number" ? opts.to   : resolveTimeToMs(opts.to   || "now",    nowMs);
+  const rangeMs = Math.max(0, toMs - fromMs);
+  const rangeS = Math.floor(rangeMs / 1000);
+  const intervalMs = opts.intervalMs ?? 60_000;
+  const maxDataPoints = opts.maxDataPoints ?? 150;
+
+  return {
+    __from: String(fromMs),
+    __to: String(toMs),
+    __timeFrom: `to_timestamp(${fromMs / 1000})`,
+    __timeTo: `to_timestamp(${toMs / 1000})`,
+    __timeFilter: `"time" BETWEEN to_timestamp(${fromMs / 1000}) AND to_timestamp(${toMs / 1000})`,
+    __interval_ms: String(intervalMs),
+    __interval: msToInterval(intervalMs),
+    __cls_interval: calcClsInterval(fromMs, toMs, maxDataPoints),
+    __rate_interval: msToInterval(Math.max(intervalMs * 4, 240_000)),
+    __range: `${rangeS}s`,
+    __range_ms: String(rangeMs),
+    __range_s: String(rangeS),
+    __all: "ALL",
+    __user_login: "",
+    __org_name: "",
+  };
 }

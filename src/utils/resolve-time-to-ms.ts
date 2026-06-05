@@ -1,6 +1,11 @@
 export function resolveTimeToMs(input: string, nowMs = Date.now()): number {
   const value = input.trim();
   if (!value) throw new Error("Invalid time: empty");
+
+  // strip alignment suffix: now-7d/d, now/d, now/w, now/M etc.
+  const stripped = value.replace(/\/[a-zA-Z]+$/, "");
+  if (stripped !== value) return resolveTimeToMs(stripped, nowMs);
+
   if (value === "now") return nowMs;
 
   const relative = value.match(/^now-([0-9]+)(ms|s|m|h|d|w)$/);
