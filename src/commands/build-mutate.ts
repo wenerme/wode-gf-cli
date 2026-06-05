@@ -382,14 +382,14 @@ export function buildMutateCommands(app: CommandAppContext) {
     {
       cmd: "alert-rule",
       resource: "alert-rules",
-      description: "manage alert rules (get/delete)",
+      description: "manage alert rules (list/search/get/delete)",
     },
     {
       cmd: "contact-point",
       resource: "contact-points",
-      description: "manage contact points (get/delete)",
+      description: "manage contact points (list/search/get/delete)",
     },
-    { cmd: "policy", resource: "policies", description: "manage policies (get)" },
+    { cmd: "policy", resource: "policies", description: "manage notification policies (get)" },
   ];
 
   const scopedCommands: Command[] = [];
@@ -798,6 +798,53 @@ export function buildMutateCommands(app: CommandAppContext) {
             console.log(JSON.stringify(updated, null, 2));
           }
           printMessage(ctx, `Renamed folder ${previousTitle} to ${title}.`);
+        });
+    }
+
+    if (entry.resource === "alert-rules" || entry.resource === "contact-points") {
+      const labelField = entry.resource === "alert-rules" ? "title" : "name";
+
+      scoped
+        .command("list")
+        .description(`List ${entry.cmd}s`)
+        .option("--folder <folderUid>", entry.resource === "alert-rules" ? "filter by folder uid" : undefined)
+        .option("--json", "print full list as json")
+        .action(async function (options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const remote = await fetchResources(new GrafanaClient(ctx), [entry.resource]);
+          let items = asObjectArray(resourceItems(remote, entry.resource));
+
+          if (entry.resource === "alert-rules" && options.folder) {
+            const folderUid = String(options.folder).trim();
+            items = items.filter((item) => asString(item.folderUid) === folderUid);
+          }
+
+          const rows = items.map((item) => ({
+            uid: asString(item.uid) || "",
+            label: asString(item[labelField]) || asString(item.uid) || "",
+            raw: item as JsonObject,
+          }));
+
+          printResourceRows(ctx, rows, options, rowsToTable, printMessage);
+        });
+
+      scoped
+        .command("search <TERM>")
+        .description(`Search ${entry.cmd}s by uid/title/name`)
+        .option("--json", "print matched resources as json")
+        .action(async function (term: string, options) {
+          const ctx = parseCommonOptions(this as unknown as Command);
+          const remote = await fetchResources(new GrafanaClient(ctx), [entry.resource]);
+          const query = term.trim().toLowerCase();
+          const rows = asObjectArray(resourceItems(remote, entry.resource))
+            .map((item) => ({
+              uid: asString(item.uid) || "",
+              label: asString(item[labelField]) || asString(item.uid) || "",
+              raw: item as JsonObject,
+            }))
+            .filter((row) => [row.uid, row.label].some((v) => v.toLowerCase().includes(query)));
+
+          printResourceRows(ctx, rows, options, rowsToTable, printMessage);
         });
     }
 
