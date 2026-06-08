@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "wode-gf-cli": "./dist/wode-gf-cli.js"
+    "wode-gf-cli": "dist/wode-gf-cli.js"
   },
   "files": [
     "dist"
