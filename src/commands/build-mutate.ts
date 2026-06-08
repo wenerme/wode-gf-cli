@@ -213,7 +213,6 @@ export function buildMutateCommands(app: CommandAppContext) {
       rowsToTable,
       renderTable,
       deleteSingleResource,
-      parseIdOrUidSelector,
     },
   } = app;
 

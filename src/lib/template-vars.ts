@@ -1,7 +1,7 @@
-import { asObjectArray, asString, getObjectField } from "./json-narrow";
-import { calcClsInterval } from "./cls-interval";
 import { msToInterval } from "../utils/ms-to-interval";
 import { resolveTimeToMs } from "../utils/resolve-time-to-ms";
+import { calcClsInterval } from "./cls-interval";
+import { asObjectArray, asString, getObjectField } from "./json-narrow";
 
 type JsonObject = Record<string, unknown>;
 export type TemplateVars = Record<string, string | string[]>;
@@ -188,11 +188,11 @@ export function resolveDatasourceUid(
 // Both are resolved via the same string-replace mechanism in wode-gf-cli.
 
 export type GrafanaMacroOptions = {
-  from?: string | number;   // time expression, epoch ms number, or epoch ms string
+  from?: string | number; // time expression, epoch ms number, or epoch ms string
   to?: string | number;
   nowMs?: number;
-  intervalMs?: number;      // panel interval in ms, default 60000
-  maxDataPoints?: number;   // used to calculate $__cls_interval step, default 150
+  intervalMs?: number; // panel interval in ms, default 60000
+  maxDataPoints?: number; // used to calculate $__cls_interval step, default 150
 };
 
 /**
@@ -208,7 +208,7 @@ export type GrafanaMacroOptions = {
 export function buildGrafanaMacros(opts: GrafanaMacroOptions = {}): TemplateVars {
   const nowMs = opts.nowMs ?? Date.now();
   const fromMs = typeof opts.from === "number" ? opts.from : resolveTimeToMs(opts.from || "now-1h", nowMs);
-  const toMs   = typeof opts.to   === "number" ? opts.to   : resolveTimeToMs(opts.to   || "now",    nowMs);
+  const toMs = typeof opts.to === "number" ? opts.to : resolveTimeToMs(opts.to || "now", nowMs);
   const rangeMs = Math.max(0, toMs - fromMs);
   const rangeS = Math.floor(rangeMs / 1000);
   const intervalMs = opts.intervalMs ?? 60_000;
