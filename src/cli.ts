@@ -1474,7 +1474,6 @@ async function validateDashboards(
   const fromMs = resolveTimeToMs(options.from, nowMs);
   const toMs = resolveTimeToMs(options.to, nowMs);
   const rangeMs = Math.max(0, toMs - fromMs);
-  const rangeS = Math.round(rangeMs / 1000);
   const datasourceTypeByUid = new Map<string, string>();
   if (onlyDatasourceTypes.size > 0 || skipDatasourceTypes.size > 0) {
     for (const datasource of asObjectArray(await client.request<unknown[]>("GET", "/api/datasources"))) {
