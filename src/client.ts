@@ -126,6 +126,7 @@ export class GrafanaClient {
     apiPath: string,
     body?: unknown,
     expected: number[] = [200],
+    extraHeaders: HeadersInit = {},
   ): Promise<T> {
     const result = await request<T, unknown>({
       name: "grafana-request",
@@ -135,6 +136,7 @@ export class GrafanaClient {
       headers: {
         Accept: "application/json",
         ...grafanaAuthHeaders(this),
+        ...extraHeaders,
       },
       body,
       timeoutMs: this.timeoutMs,
