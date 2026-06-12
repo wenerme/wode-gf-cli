@@ -5,6 +5,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { GrafanaClient } from "../client";
 import { asObject, asObjectArray, asString, getObjectField } from "../lib/json-narrow";
+import { applyLegendPresetToDashboard, parsePanelIds } from "../lib/panel-legend";
 import { parseGrafanaPromQLMacroMode } from "../promql/grafana";
 import { type ResourceSelector, ResourceSelectorSchema } from "../schema";
 import { buildRenderPanelPath, parsePositiveInt } from "../utils";
@@ -166,6 +167,23 @@ function panelInspectSummary(selection: DashboardSelection, match: PanelMatch) {
       links: asObjectArray(panel.links).length,
     },
   };
+}
+
+function printLegendPresetResult(
+  ctx: CliContext,
+  results: Array<{ panelId: number; panelTitle: string; status: string; message: string }>,
+  json: boolean,
+  printMessage: (ctx: CliContext, message: string) => void,
+) {
+  if (json || ctx.output === "json") {
+    console.log(JSON.stringify({ results }, null, 2));
+    return;
+  }
+  for (const result of results) {
+    const level = result.status === "updated" || result.status === "unchanged" ? "OK" : "WARN";
+    printMessage(ctx, `[${level}] panel ${result.panelId} ${result.panelTitle}: ${result.message}`);
+  }
+  if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
 }
 
 function renderPanelInspectText(summary: ReturnType<typeof panelInspectSummary>) {
@@ -543,6 +561,57 @@ export function buildPanelCommand(app: CommandAppContext) {
         return;
       }
       if (warnings.length > 0) process.exitCode = 2;
+    });
+
+  panelCommand
+    .command("legend-preset <TARGET>")
+    .description("Apply common timeseries legend preset to remote panel ref or local dashboard JSON")
+    .option("--panel-id <ids>", "panel id(s) for local dashboard JSON, comma-separated")
+    .option("--right-table", "place legend table on the right")
+    .option("--mean-desc", "sort by Mean descending")
+    .option("--calcs <list>", "comma-separated calcs", "mean,max,sum")
+    .option("--json", "print result as json")
+    .action(async function panelLegendPresetAction(target: string, options) {
+      const ctx = runtime.parseCommonOptions(this as unknown as Command, {
+        requireUrl: !fs.existsSync(target),
+      });
+      const calcs = String(options.calcs || "mean,max,sum")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (calcs.length === 0) throw new Error("--calcs must contain at least one calculation");
+
+      if (fs.existsSync(target)) {
+        const file = path.resolve(target);
+        const root = JSON.parse(fs.readFileSync(file, "utf8")) as JsonObject;
+        const dashboard = getObjectField(root, "dashboard") || root;
+        const panelIds = parsePanelIds(options.panelId);
+        if (panelIds.length === 0) throw new Error("local dashboard legend-preset requires --panel-id");
+        const result = applyLegendPresetToDashboard(dashboard, panelIds, {
+          calcs,
+          rightTable: Boolean(options.rightTable),
+          meanDesc: Boolean(options.meanDesc),
+        });
+        const output = getObjectField(root, "dashboard")
+          ? { ...root, dashboard: result.dashboard }
+          : result.dashboard;
+        if (!ctx.dryRun) fs.writeFileSync(file, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+        printLegendPresetResult(ctx, result.results, Boolean(options.json), runtime.printMessage);
+        if (result.results.some((item) => item.status === "skip")) process.exitCode = 2;
+        return;
+      }
+
+      const parsed = parsePanelRef(target);
+      const selection = await loadDashboardSelection(ctx, parsed.dashboard, runtime);
+      const result = applyLegendPresetToDashboard(selection.dashboard, [parsed.panelId], {
+        calcs,
+        rightTable: Boolean(options.rightTable),
+        meanDesc: Boolean(options.meanDesc),
+      });
+      const nextPanel = findPanel(result.dashboard, parsed.panelId).panel;
+      await applyPanelUpdate(ctx, selection, parsed.panelId, nextPanel, runtime);
+      printLegendPresetResult(ctx, result.results, Boolean(options.json), runtime.printMessage);
+      if (result.results.some((item) => item.status === "skip")) process.exitCode = 2;
     });
 
   panelCommand

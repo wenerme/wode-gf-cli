@@ -52,12 +52,12 @@ ${formatRows([
     "folder",
     "list [--tree] | search <TERM> | get <ID|TITLE> | create <TITLE> | rename <ID|TITLE> <TITLE> | delete <ID|TITLE>",
   ],
-  ["alert-rule", "get <ID> | delete <ID>"],
+  ["alert-rule", "get <ID> | validate <FILE|ID> | lint <FILE|ID> | check-closure <FILE|ID> | delete <ID>"],
   ["contact-point", "get <ID> | delete <ID>"],
-  ["policy", "get"],
+  ["policy", "get | route upsert"],
   [
     "panel / p",
-    "list DASH | get DASH/PANEL | inspect DASH/PANEL | patch DASH/PANEL | edit DASH/PANEL | validate DASH/PANEL | render DASH/PANEL",
+    "list DASH | get DASH/PANEL | inspect DASH/PANEL | patch DASH/PANEL | legend-preset DASH/PANEL | edit DASH/PANEL | validate DASH/PANEL | render DASH/PANEL",
   ],
   ["user", "list [--search <TERM>]"],
 ])}`;

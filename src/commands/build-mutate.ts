@@ -6,6 +6,7 @@ import { asObject, asObjectArray, asString, getObjectField } from "../lib/json-n
 import { jsonPathRegex, jsonPathSet } from "../lib/jsonpath-patch";
 import { CliName, type ResourceName, type ResourceSelector, ResourceSelectorSchema } from "../schema";
 import { parsePositiveInt } from "../utils";
+import { attachAlertRuleOps, attachPolicyRouteOps } from "./build-alert-ops";
 import type { CliContext, CommandAppContext } from "./runtime";
 
 type JsonObject = Record<string, unknown>;
@@ -799,6 +800,9 @@ export function buildMutateCommands(app: CommandAppContext) {
           printMessage(ctx, `Renamed folder ${previousTitle} to ${title}.`);
         });
     }
+
+    if (entry.resource === "alert-rules") attachAlertRuleOps(scoped, app);
+    if (entry.resource === "policies") attachPolicyRouteOps(scoped, app);
 
     if (entry.resource === "alert-rules" || entry.resource === "contact-points") {
       const labelField = entry.resource === "alert-rules" ? "title" : "name";

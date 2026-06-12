@@ -2,11 +2,19 @@ import path from "node:path";
 import { Command } from "commander";
 import { ValidateOptionsSchema } from "../schema";
 import { parsePositiveInt, parseSkipPanelIds, parseVarAssignments } from "../utils";
+import { validateAlertRules } from "./build-alert-ops";
 import type { CommandAppContext, ValidateIssue } from "./runtime";
 
 export function buildValidateCommand(app: CommandAppContext) {
   const { collectList, runtime } = app;
-  const { parseCommonOptions, collectBundle, collectDashboards, validateDashboards, printMessage } = runtime;
+  const {
+    parseCommonOptions,
+    collectBundle,
+    collectDashboards,
+    resourceItems,
+    validateDashboards,
+    printMessage,
+  } = runtime;
 
   return new Command("validate")
     .argument("[sources...]", "source files/directories")
@@ -42,24 +50,40 @@ export function buildValidateCommand(app: CommandAppContext) {
         vars: options.var || [],
       });
 
-      const bundle = collectBundle(resolvedSources, "dashboards");
+      const bundle = collectBundle(resolvedSources);
       const dashboards = collectDashboards(bundle);
+      const alertRules = resourceItems(bundle, "alert-rules") as Array<Record<string, unknown>>;
       const varOverrides = parseVarAssignments(parsedOptions.vars);
 
-      const { errors, warnings } = await validateDashboards(ctx, dashboards, {
-        from: parsedOptions.from,
-        to: parsedOptions.to,
-        timeoutMs: parsedOptions.timeoutMs,
-        intervalMs: parsedOptions.intervalMs,
-        concurrency: parsedOptions.concurrency,
-        failFast: parsedOptions.failFast,
-        syntaxOnly: parsedOptions.syntaxOnly,
-        promqlMacroMode: parsedOptions.promqlMacroMode,
-        skipPanelIds: parsedOptions.skipPanelIds,
-        datasourceTypes: parsedOptions.datasourceTypes,
-        skipTypes: parsedOptions.skipTypes,
-        vars: varOverrides,
-      });
+      const { errors, warnings } =
+        dashboards.length > 0
+          ? await validateDashboards(ctx, dashboards, {
+              from: parsedOptions.from,
+              to: parsedOptions.to,
+              timeoutMs: parsedOptions.timeoutMs,
+              intervalMs: parsedOptions.intervalMs,
+              concurrency: parsedOptions.concurrency,
+              failFast: parsedOptions.failFast,
+              syntaxOnly: parsedOptions.syntaxOnly,
+              promqlMacroMode: parsedOptions.promqlMacroMode,
+              skipPanelIds: parsedOptions.skipPanelIds,
+              datasourceTypes: parsedOptions.datasourceTypes,
+              skipTypes: parsedOptions.skipTypes,
+              vars: varOverrides,
+            })
+          : { errors: [], warnings: [] };
+
+      const alertValidation =
+        alertRules.length > 0
+          ? await validateAlertRules(ctx, alertRules, runtime, {
+              from: parsedOptions.from,
+              to: parsedOptions.to,
+              timeoutMs: parsedOptions.timeoutMs,
+              intervalMs: parsedOptions.intervalMs,
+              maxDataPoints: 1_000,
+              vars: varOverrides,
+            })
+          : { results: [], refIssues: [] };
 
       const dashboardGroups = new Map<string, ValidateIssue[]>();
       for (const err of errors) {
@@ -92,11 +116,26 @@ export function buildValidateCommand(app: CommandAppContext) {
         );
       }
 
-      if (errors.length > 0) {
+      for (const issue of alertValidation.refIssues) {
+        printMessage(ctx, `[ERROR] AlertRule: ${issue.rule} / ${issue.message}`);
+      }
+      for (const result of alertValidation.results) {
+        const level = result.status === "ok" ? "OK" : result.status === "error" ? "ERROR" : "WARN";
+        printMessage(ctx, `[${level}] AlertRule: ${result.rule} / refId=${result.refId} / ${result.message}`);
+      }
+
+      const hasAlertErrors =
+        alertValidation.refIssues.length > 0 ||
+        alertValidation.results.some((item) => item.status === "error");
+      const hasAlertWarnings = alertValidation.results.some(
+        (item) => item.status === "no-data" || item.status === "skip",
+      );
+
+      if (errors.length > 0 || hasAlertErrors) {
         process.exitCode = 1;
         return;
       }
-      if (warnings.length > 0) {
+      if (warnings.length > 0 || hasAlertWarnings) {
         process.exitCode = 2;
       }
     });
