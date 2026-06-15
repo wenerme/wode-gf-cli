@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { __test__ } from "./cli";
 import { parsePanelRef, replacePanelInDashboard } from "./commands/build-panel";
 import { calcClsInterval } from "./lib/cls-interval";
+import { parsePositiveInt, parsePositiveNumber, parseRenderScale } from "./utils";
 
 describe("cli internal unit tests", () => {
   it("parses env file with export/quote/comment", () => {
@@ -97,6 +98,16 @@ describe("cli internal unit tests", () => {
 
   it("parses render vars and builds render path", () => {
     expect(__test__.parseRenderVar("env=prod")).toEqual({ key: "env", value: "prod" });
+    expect(() => __test__.parseRenderVar("kiosk", "--render-param")).toThrow(
+      "Invalid --render-param expression",
+    );
+    expect(parsePositiveInt("1200", 1)).toBe(1200);
+    expect(() => parsePositiveInt("1200px", 1)).toThrow("Invalid positive integer");
+    expect(parsePositiveNumber("1.5", 1)).toBe(1.5);
+    expect(() => parsePositiveNumber("1.5x", 1)).toThrow("Invalid positive number");
+    expect(parseRenderScale(undefined, true)).toBe(2);
+    expect(parseRenderScale("1.5", false)).toBe(1.5);
+    expect(() => parseRenderScale("5", false)).toThrow("Maximum is 4");
     const renderPath = __test__.buildRenderPanelPath({
       dashboardUid: "abc123",
       panelId: 7,
@@ -104,12 +115,17 @@ describe("cli internal unit tests", () => {
       to: "now",
       width: 1200,
       height: 800,
+      scale: 2,
       tz: "UTC",
       theme: "light",
       vars: ["env=prod", "region=ap-southeast-1"],
+      renderParams: ["kiosk=1", "timeout=120"],
     });
     expect(renderPath).toContain("/render/d-solo/abc123/_");
     expect(renderPath).toContain("panelId=7");
+    expect(renderPath).toContain("scale=2");
+    expect(renderPath).toContain("kiosk=1");
+    expect(renderPath).toContain("timeout=120");
     expect(renderPath).toContain("var-env=prod");
   });
 
