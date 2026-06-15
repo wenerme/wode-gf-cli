@@ -88,9 +88,11 @@ export const RenderPanelOptionsSchema = z.object({
   to: z.string().min(1),
   width: z.number().int().min(100).max(4000),
   height: z.number().int().min(100).max(4000),
+  scale: z.number().positive().max(4).default(1),
   tz: z.string().min(1),
   theme: z.enum(["light", "dark"]),
   vars: z.array(z.string()).default([]),
+  renderParams: z.array(z.string()).default([]),
 });
 export type RenderPanelOptions = z.infer<typeof RenderPanelOptionsSchema>;
 

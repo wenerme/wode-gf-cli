@@ -4,7 +4,7 @@ import { Command } from "commander";
 import { GrafanaClient } from "../client";
 import { asObjectArray, asString, getObjectField } from "../lib/json-narrow";
 import { RenderPanelOptionsSchema, type ResourceName } from "../schema";
-import { buildRenderDashboardPath, buildRenderPanelPath, parsePositiveInt } from "../utils";
+import { buildRenderDashboardPath, buildRenderPanelPath, parsePositiveInt, parseRenderScale } from "../utils";
 import type { CommandAppContext } from "./runtime";
 
 type JsonObject = Record<string, unknown>;
@@ -101,6 +101,9 @@ export function buildListAndRenderCommands(app: CommandAppContext) {
     .option("--to <to>", "time range end", "now")
     .option("--width <px>", "render width", "1600")
     .option("--height <px>", "render height", "900")
+    .option("--scale <factor>", "device scale factor / output pixel ratio")
+    .option("--hdpi", "shortcut for --scale 2 when --scale is not set")
+    .option("--render-param <expr>", "extra render URL parameter key=value, repeatable", collectList, [])
     .option("--tz <timezone>", "timezone", "UTC")
     .option("--theme <theme>", "light|dark", "light")
     .option("--render-timeout <ms>", "render request timeout milliseconds", "60000")
@@ -117,9 +120,11 @@ export function buildListAndRenderCommands(app: CommandAppContext) {
         to: String(options.to || "now").trim(),
         width: parsePositiveInt(options.width, 1600),
         height: parsePositiveInt(options.height, 900),
+        scale: parseRenderScale(options.scale, Boolean(options.hdpi)),
         tz: String(options.tz || "UTC").trim(),
         theme: String(options.theme || "light").trim(),
         vars: options.var || [],
+        renderParams: options.renderParam || [],
       };
 
       let renderPath = "";
@@ -138,9 +143,11 @@ export function buildListAndRenderCommands(app: CommandAppContext) {
           to: base.to,
           width: base.width,
           height: base.height,
+          scale: base.scale,
           tz: base.tz,
           theme: base.theme as "light" | "dark",
           vars: base.vars,
+          renderParams: base.renderParams,
         });
       }
 

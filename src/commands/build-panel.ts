@@ -8,7 +8,7 @@ import { asObject, asObjectArray, asString, getObjectField } from "../lib/json-n
 import { applyLegendPresetToDashboard, parsePanelIds } from "../lib/panel-legend";
 import { parseGrafanaPromQLMacroMode } from "../promql/grafana";
 import { type ResourceSelector, ResourceSelectorSchema } from "../schema";
-import { buildRenderPanelPath, parsePositiveInt } from "../utils";
+import { buildRenderPanelPath, parsePositiveInt, parseRenderScale } from "../utils";
 import type { CliContext, CommandAppContext } from "./runtime";
 
 type JsonObject = Record<string, unknown>;
@@ -622,6 +622,9 @@ export function buildPanelCommand(app: CommandAppContext) {
     .option("--to <to>", "time range end", "now")
     .option("--width <px>", "render width", "1600")
     .option("--height <px>", "render height", "900")
+    .option("--scale <factor>", "device scale factor / output pixel ratio")
+    .option("--hdpi", "shortcut for --scale 2 when --scale is not set")
+    .option("--render-param <expr>", "extra render URL parameter key=value, repeatable", collectList, [])
     .option("--tz <timezone>", "timezone", "UTC")
     .option("--theme <theme>", "light|dark", "light")
     .option("--render-timeout <ms>", "render request timeout milliseconds", "60000")
@@ -641,9 +644,11 @@ export function buildPanelCommand(app: CommandAppContext) {
         to: String(options.to || "now").trim(),
         width: parsePositiveInt(options.width, 1600),
         height: parsePositiveInt(options.height, 900),
+        scale: parseRenderScale(options.scale, Boolean(options.hdpi)),
         tz: String(options.tz || "UTC").trim(),
         theme: String(options.theme || "light").trim() as "light" | "dark",
         vars: options.var || [],
+        renderParams: options.renderParam || [],
       });
 
       if (ctx.dryRun) {

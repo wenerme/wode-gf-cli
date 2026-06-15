@@ -193,6 +193,12 @@ cat ./local/cls-query.json | wode-gf-cli --context local query my-cls --query-fi
 # render a panel image
 wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
 
+# render a panel with Retina/HDPI output while keeping the same layout size
+wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 --width 1600 --height 900 --hdpi -o local/panel@2x.png
+
+# pass extra Grafana render URL parameters
+wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 --render-param kiosk=1 -o local/panel.png
+
 # render a dashboard image
 wode-gf-cli --context local render dashboard --dashboard-uid <uid> -o local/dashboard.png
 
