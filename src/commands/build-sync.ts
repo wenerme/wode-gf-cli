@@ -27,6 +27,8 @@ export function buildSyncCommands(app: CommandAppContext) {
     parseResources,
     parseResourceAlias,
     dedupeResources,
+    isDashboardResourceV2,
+    dashboardResourceV2HasTabs,
     collectBundle,
     collectDashboards,
     fetchResources,
@@ -41,11 +43,56 @@ export function buildSyncCommands(app: CommandAppContext) {
     printMessage,
     printData,
     validateDashboardPromQLSyntax,
+    createEmptyBundle,
     writeJson,
   } = runtime;
 
   const bundleResources = (bundle: ExportBundle): ResourceName[] => {
     return SyncResourceOrder.filter((resource) => resourceItems(bundle, resource).length > 0);
+  };
+
+  const parseDashboardApiMode = (value: unknown, fallback: "classic" | "auto") => {
+    const mode = String(value || fallback)
+      .trim()
+      .toLowerCase();
+    if (mode === "classic" || mode === "v2" || mode === "auto") return mode;
+    throw new Error(`Unsupported --dashboard-api: ${String(value)}`);
+  };
+
+  const dashboardV2NameFromItem = (item: unknown): string | undefined => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+    const obj = item as Record<string, unknown>;
+    const metadata =
+      obj.metadata && typeof obj.metadata === "object"
+        ? (obj.metadata as Record<string, unknown>)
+        : undefined;
+    const spec = obj.spec && typeof obj.spec === "object" ? (obj.spec as Record<string, unknown>) : undefined;
+    const value = metadata?.name || spec?.uid || obj.uid;
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  };
+
+  const fetchDashboardV2LocalSubset = async (
+    client: GrafanaClient,
+    localItems: unknown[],
+  ): Promise<ExportBundle> => {
+    const bundle = createEmptyBundle();
+    bundle.resources = ["dashboards"];
+    bundle.dashboards = [];
+    for (const item of localItems) {
+      const name = dashboardV2NameFromItem(item);
+      if (!name) continue;
+      const path = `/apis/dashboard.grafana.app/v2beta1/namespaces/default/dashboards/${encodeURIComponent(name)}`;
+      const response = await client.requestWithStatus<unknown>("GET", path);
+      if (response.status === 404) continue;
+      if (response.status < 200 || response.status >= 300) {
+        const message = typeof response.data === "string" ? response.data : JSON.stringify(response.data);
+        throw new Error(`${response.status} GET ${path}: ${message}`);
+      }
+      if (response.data && typeof response.data === "object" && !Array.isArray(response.data)) {
+        bundle.dashboards.push({ ...(response.data as Record<string, unknown>), __type: "dashboard-v2" });
+      }
+    }
+    return bundle;
   };
 
   const exportCommand = new Command("export")
@@ -55,14 +102,17 @@ export function buildSyncCommands(app: CommandAppContext) {
       "-r, --resources <list>",
       "comma-separated resources: dashboards,datasources,folders,alert-rules,contact-points,policies",
     )
+    .option("--dashboard-api <mode>", "dashboard export API: classic|v2", "classic")
     .option("--compact", "write compact json")
     .action(async function exportAction(options) {
       const ctx = parseCommonOptions(this as unknown as Command);
       const resources = parseResources(options.resources);
+      const dashboardApiMode = parseDashboardApiMode(options.dashboardApi, "classic");
+      const dashboardApi = dashboardApiMode === "v2" ? "v2" : "classic";
       const outDir = path.resolve(options.out);
 
       const client = new GrafanaClient(ctx);
-      const bundle = await fetchResources(client, resources);
+      const bundle = await fetchResources(client, resources, { dashboardApi });
       bundle.context = ctx.contextName;
 
       bundleToFiles(outDir, bundle, !options.compact);
@@ -85,6 +135,7 @@ export function buildSyncCommands(app: CommandAppContext) {
     .option("--match-name <name>", "resource name selector")
     .option("--title <title>", "resource title selector")
     .option("-w, --where <expr>", "filter path=value, repeatable", collectList, [])
+    .option("--dashboard-api <mode>", "dashboard pull API: auto|classic|v2", "auto")
     .option("--compact", "write compact json")
     .action(async function pullAction(file: string, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
@@ -108,28 +159,50 @@ export function buildSyncCommands(app: CommandAppContext) {
       }
 
       const localItem = localBundle ? resourceItems(localBundle, resource)[0] : undefined;
+      const localObject =
+        localItem && typeof localItem === "object" ? (localItem as Record<string, unknown>) : undefined;
+      const localMetadata =
+        localObject?.metadata && typeof localObject.metadata === "object"
+          ? (localObject.metadata as Record<string, unknown>)
+          : undefined;
+      const localSpec =
+        localObject?.spec && typeof localObject.spec === "object"
+          ? (localObject.spec as Record<string, unknown>)
+          : undefined;
       const selector: ResourceSelector = ResourceSelectorSchema.parse({
         id: options.id,
         uid:
           options.uid ||
-          (localItem && typeof localItem === "object"
-            ? String((localItem as Record<string, unknown>).uid || "") || undefined
-            : undefined),
+          (localObject ? String(localObject.uid || localMetadata?.name || "") || undefined : undefined),
         name:
           options.matchName ||
-          (localItem && typeof localItem === "object"
-            ? String((localItem as Record<string, unknown>).name || "") || undefined
-            : undefined),
+          (localObject ? String(localObject.name || localMetadata?.name || "") || undefined : undefined),
         title:
           options.title ||
-          (localItem && typeof localItem === "object"
-            ? String((localItem as Record<string, unknown>).title || "") || undefined
-            : undefined),
+          (localObject ? String(localObject.title || localSpec?.title || "") || undefined : undefined),
         where: options.where || [],
       });
 
-      const remoteBundle = await fetchResources(new GrafanaClient(ctx), [resource]);
-      const selected = selectResource(resourceItems(remoteBundle, resource), resource, selector, false);
+      const client = new GrafanaClient(ctx);
+      const dashboardApiMode = parseDashboardApiMode(options.dashboardApi, "auto");
+      let selected: unknown;
+      if (resource === "dashboards" && dashboardApiMode === "auto") {
+        const preferV2 = localObject ? isDashboardResourceV2(localObject) : false;
+        try {
+          const v2Bundle = await fetchResources(client, [resource], { dashboardApi: "v2" });
+          const selectedV2 = selectResource(resourceItems(v2Bundle, resource), resource, selector, true);
+          if (selectedV2 && (preferV2 || dashboardResourceV2HasTabs(selectedV2 as Record<string, unknown>))) {
+            selected = selectedV2;
+          }
+        } catch (error) {
+          if (preferV2) throw error;
+        }
+      }
+      if (!selected) {
+        const dashboardApi = dashboardApiMode === "v2" ? "v2" : "classic";
+        const remoteBundle = await fetchResources(client, [resource], { dashboardApi });
+        selected = selectResource(resourceItems(remoteBundle, resource), resource, selector, false);
+      }
       writeJson(resolvedFile, selected, !options.compact);
       printData(ctx, "pull-complete", {
         resource,
@@ -281,11 +354,22 @@ export function buildSyncCommands(app: CommandAppContext) {
     .option("--title <title>", "resource title selector")
     .option("-w, --where <expr>", "filter path=value, repeatable", collectList, [])
     .option("--path <path>", "only compare value at this path")
+    .option("--local-only", "only compare resources present in the local input")
+    .option("--dashboard-api <mode>", "dashboard diff API: auto|classic|v2", "auto")
     .option("--json", "print full diff as JSON")
     .action(async function diffAction(options) {
       const ctx = parseCommonOptions(this as unknown as Command);
-      const resources = parseResources(options.resources);
       const inPath = path.resolve(options.in);
+      const dashboardApiMode = parseDashboardApiMode(options.dashboardApi, "auto");
+      const client = new GrafanaClient(ctx);
+
+      const dashboardApiForLocal = (localBundle: ExportBundle): "classic" | "v2" => {
+        if (dashboardApiMode === "v2") return "v2";
+        if (dashboardApiMode === "classic") return "classic";
+        return resourceItems(localBundle, "dashboards").some((item) => isDashboardResourceV2(item))
+          ? "v2"
+          : "classic";
+      };
 
       if (options.resource) {
         const resource = parseResourceAlias(options.resource);
@@ -299,9 +383,14 @@ export function buildSyncCommands(app: CommandAppContext) {
           where: options.where || [],
         });
         const localBundle = collectBundle([inPath], resource);
-        const remoteBundle = await fetchResources(new GrafanaClient(ctx), [resource]);
+        const localItems = resourceItems(localBundle, resource);
+        const dashboardApi = resource === "dashboards" ? dashboardApiForLocal(localBundle) : undefined;
+        const localItem = selectResource(localItems, resource, selector, true);
+        const remoteBundle =
+          resource === "dashboards" && dashboardApi === "v2" && localItem
+            ? await fetchDashboardV2LocalSubset(client, [localItem])
+            : await fetchResources(client, [resource], dashboardApi ? { dashboardApi } : undefined);
 
-        const localItem = selectResource(resourceItems(localBundle, resource), resource, selector, true);
         const remoteItem = selectResource(resourceItems(remoteBundle, resource), resource, selector, true);
         const localValue = getPathValue(localItem, options.path);
         const remoteValue = getPathValue(remoteItem, options.path);
@@ -337,7 +426,26 @@ export function buildSyncCommands(app: CommandAppContext) {
       }
 
       const local = collectBundle([inPath]);
-      const remote = await fetchResources(new GrafanaClient(ctx), resources);
+      const resources = options.resources
+        ? parseResources(options.resources)
+        : options.localOnly
+          ? bundleResources(local)
+          : parseResources(undefined);
+      const dashboardApi = dashboardApiForLocal(local);
+      let remote: ExportBundle;
+      if (options.localOnly && resources.includes("dashboards") && dashboardApi === "v2") {
+        const otherResources = resources.filter((resource) => resource !== "dashboards");
+        remote =
+          otherResources.length > 0
+            ? await fetchResources(client, otherResources, { dashboardApi })
+            : createEmptyBundle();
+        remote.resources = resources;
+        remote.dashboards = (
+          await fetchDashboardV2LocalSubset(client, resourceItems(local, "dashboards"))
+        ).dashboards;
+      } else {
+        remote = await fetchResources(client, resources, { dashboardApi });
+      }
       const result: Record<string, DiffItem[]> = {};
 
       for (const resource of resources) {
@@ -350,7 +458,9 @@ export function buildSyncCommands(app: CommandAppContext) {
 
         const localData = resourceItems(local, resource);
         const remoteData = resourceItems(remote, resource);
-        result[resource] = diffArray(resource, localData || [], remoteData || []);
+        result[resource] = diffArray(resource, localData || [], remoteData || [], {
+          localOnly: Boolean(options.localOnly),
+        });
       }
 
       if (options.json) {

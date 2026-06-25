@@ -9,20 +9,24 @@ export type TemplateVars = Record<string, string | string[]>;
 export function extractTemplatingValues(dashboard: JsonObject): TemplateVars {
   const values: TemplateVars = {};
   const templating = getObjectField(dashboard, "templating");
-  const list = templating ? asObjectArray(templating.list) : [];
+  const classicList = templating ? asObjectArray(templating.list) : [];
+  const v2List = asObjectArray(dashboard.variables);
+  const list = [...classicList, ...v2List];
   for (const variable of list) {
-    const name = asString(variable.name);
+    const spec = getObjectField(variable, "spec");
+    const source = spec || variable;
+    const name = asString(source.name);
     if (!name) continue;
-    const current = getObjectField(variable, "current");
-    const allValue = asString(variable.allValue);
+    const current = getObjectField(source, "current");
+    const allValue = asString(source.allValue);
     const currentValue = current ? current.value : undefined;
-    if (typeof currentValue === "string" && currentValue) {
+    if (typeof currentValue === "string") {
       if (currentValue === "$__all") {
         if (allValue) {
           values[name] = allValue;
           continue;
         }
-        const options = asObjectArray(variable.options);
+        const options = asObjectArray(source.options);
         let optionValues = options
           .map((option) => option.value)
           .flatMap((value) => {
@@ -33,8 +37,11 @@ export function extractTemplatingValues(dashboard: JsonObject): TemplateVars {
           })
           .filter((v) => v && v !== "$__all");
 
-        if (optionValues.length === 0 && asString(variable.type) === "custom") {
-          const queryStr = asString(variable.query);
+        if (
+          optionValues.length === 0 &&
+          (asString(variable.type) === "custom" || asString(variable.kind) === "CustomVariable")
+        ) {
+          const queryStr = asString(source.query);
           if (queryStr) {
             optionValues = queryStr
               .split(",")
