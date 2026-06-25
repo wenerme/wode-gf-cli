@@ -47,8 +47,14 @@ export type CliRuntime = {
   parseResources: (value?: string) => ResourceName[];
   parseResourceAlias: (value: string | undefined) => ResourceName | undefined;
   dedupeResources: (resources: ResourceName[]) => ResourceName[];
+  isDashboardResourceV2: (value: unknown) => value is JsonObject;
+  dashboardResourceV2HasTabs: (value: JsonObject) => boolean;
   collectBundle: (sources: string[], forcedResource?: ResourceName) => ExportBundle;
-  fetchResources: (client: GrafanaClient, resources: ResourceName[]) => Promise<ExportBundle>;
+  fetchResources: (
+    client: GrafanaClient,
+    resources: ResourceName[],
+    options?: { dashboardApi?: "classic" | "v2" },
+  ) => Promise<ExportBundle>;
   bundleToFiles: (outDir: string, bundle: ExportBundle, pretty: boolean) => void;
   importResources: (
     ctx: CliContext,
@@ -66,7 +72,12 @@ export type CliRuntime = {
   getPathValue: (input: unknown, pathExpr?: string) => unknown;
   valueEqual: (a: unknown, b: unknown) => boolean;
   hashObject: (input: unknown) => string;
-  diffArray: (resource: ResourceName, local: unknown[], remote: unknown[]) => DiffItem[];
+  diffArray: (
+    resource: ResourceName,
+    local: unknown[],
+    remote: unknown[],
+    options?: { localOnly?: boolean },
+  ) => DiffItem[];
   printMessage: (ctx: CliContext, message: string) => void;
   printData: (ctx: CliContext, type: string, data: Record<string, unknown>) => void;
   rowsToTable: (rows: Array<{ uid: string; label: string; folder?: string; raw: JsonObject }>) => string;

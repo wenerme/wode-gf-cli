@@ -143,6 +143,9 @@ wode-gf-cli --context <context> export -o ./grafana-export
 wode-gf-cli --context <context> validate ./grafana-export
 wode-gf-cli --context <context> diff -i ./grafana-export
 
+# 可选：只检查本地声明的资源，适合部分 dashboard-v2 目录
+wode-gf-cli --context <context> diff -i ./grafana-export-v2/dashboard-v2 --resources dashboards --local-only
+
 # 4) 安全应用变更
 wode-gf-cli --context <context> --dry-run import ./grafana-export
 wode-gf-cli --context <context> import ./grafana-export
@@ -154,6 +157,12 @@ wode-gf-cli --context <context> import ./grafana-export
 # 从远端拉取/导出
 wode-gf-cli --context local export -o local/grafana-export
 
+# 导出 Grafana 13 dashboard resource API v2（TabsLayout、schema v2）
+wode-gf-cli --context local export -r dashboards --dashboard-api v2 -o local/grafana-export-v2
+
+# pull 默认是 --dashboard-api auto；tabs dashboard 会自动按 v2 拉取
+wode-gf-cli --context local pull local/fusion.json -t dashboard --uid fusion
+
 # 编辑本地 JSON
 wode-gf-cli --context local query dashboard --uid <uid> --json > local/dashboard.json
 $EDITOR local/dashboard.json
@@ -163,6 +172,12 @@ wode-gf-cli --context local --dry-run import local/grafana-export
 
 # 应用变更
 wode-gf-cli --context local import local/grafana-export
+
+# dashboard-v2/ 下或 apiVersion=dashboard.grafana.app/v2beta1 的 v2 dashboard 文件会在 import 时走 v2 API
+wode-gf-cli --context local import local/grafana-export-v2/dashboard-v2/fusion.json
+
+# 对比本地 v2 dashboard source 与远端 v2 resource，不把远端其他 dashboard 当作 removed
+wode-gf-cli --context local diff -i local/grafana-export-v2/dashboard-v2 --resources dashboards --local-only
 
 # 校验 dashboard JSON 中的 panel 查询
 wode-gf-cli --context local validate ./grafana --concurrency 4 --var env=prod

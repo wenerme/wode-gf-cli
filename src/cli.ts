@@ -85,6 +85,87 @@ function stripMeta<T>(value: T): T {
   return out as T;
 }
 
+const DashboardResourceApiVersionPrefix = "dashboard.grafana.app/";
+const DashboardResourceApiBase = "/apis/dashboard.grafana.app/v2beta1/namespaces/default/dashboards";
+
+type DashboardApiMode = "classic" | "v2";
+
+function isDashboardResourceV2(value: unknown): value is JsonObject {
+  const obj = asObject(value);
+  if (!obj) return false;
+  return (
+    asString(obj.apiVersion)?.startsWith(DashboardResourceApiVersionPrefix) === true &&
+    asString(obj.kind) === "Dashboard" &&
+    Boolean(getObjectField(obj, "spec"))
+  );
+}
+
+function dashboardResourceV2Name(value: JsonObject): string | undefined {
+  return asString(getObjectField(value, "metadata")?.name) || asString(getObjectField(value, "spec")?.uid);
+}
+
+function dashboardResourceV2Title(value: JsonObject): string | undefined {
+  return asString(getObjectField(value, "spec")?.title) || dashboardResourceV2Name(value);
+}
+
+function dashboardResourceV2HasLayoutKind(value: JsonObject, layoutKind: string): boolean {
+  const visit = (layout: unknown): boolean => {
+    const obj = asObject(layout);
+    if (!obj) return false;
+    if (asString(obj.kind) === layoutKind) return true;
+    const spec = getObjectField(obj, "spec");
+    for (const tab of asObjectArray(spec?.tabs)) {
+      if (visit(getObjectField(tab, "spec")?.layout)) return true;
+    }
+    for (const row of asObjectArray(spec?.rows)) {
+      if (visit(getObjectField(row, "spec")?.layout)) return true;
+    }
+    return false;
+  };
+  return visit(getObjectField(value, "spec")?.layout);
+}
+
+function dashboardResourceV2HasTabs(value: JsonObject): boolean {
+  return dashboardResourceV2HasLayoutKind(value, "TabsLayout");
+}
+
+function sanitizeStringMap(input: unknown, omitted: Set<string>): JsonObject | undefined {
+  const obj = asObject(input);
+  if (!obj) return undefined;
+  const out: JsonObject = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (omitted.has(key)) continue;
+    if (typeof value === "string") out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function sanitizeDashboardResourceV2(input: JsonObject): JsonObject {
+  const clean = asObject(stripMeta(input));
+  if (!clean) throw new Error("Dashboard v2 resource must be a JSON object");
+  const metadata = getObjectField(clean, "metadata") || {};
+  const sanitizedMetadata: JsonObject = {};
+  const name = asString(metadata.name) || asString(getObjectField(clean, "spec")?.uid);
+  const annotations = sanitizeStringMap(
+    metadata.annotations,
+    new Set(["grafana.app/createdBy", "grafana.app/updatedBy", "grafana.app/updatedTimestamp"]),
+  );
+  const labels = sanitizeStringMap(metadata.labels, new Set(["grafana.app/deprecatedInternalID"]));
+  if (name) sanitizedMetadata.name = name;
+  if (annotations) sanitizedMetadata.annotations = annotations;
+  if (labels) sanitizedMetadata.labels = labels;
+  return {
+    apiVersion: asString(clean.apiVersion) || "dashboard.grafana.app/v2beta1",
+    kind: "Dashboard",
+    metadata: sanitizedMetadata,
+    spec: getObjectField(clean, "spec") || {},
+  };
+}
+
+function dashboardResourceV2Path(name: string): string {
+  return `${DashboardResourceApiBase}/${encodeURIComponent(name)}`;
+}
+
 function parseEnvFile(content: string): Record<string, string> {
   const vars: Record<string, string> = {};
   for (const rawLine of content.split("\n")) {
@@ -365,7 +446,11 @@ function removeKeys<T extends Record<string, unknown>>(input: T, keys: string[])
   return clone;
 }
 
-async function fetchResources(client: GrafanaClient, resources: ResourceName[]): Promise<ExportBundle> {
+async function fetchResources(
+  client: GrafanaClient,
+  resources: ResourceName[],
+  options: { dashboardApi?: DashboardApiMode } = {},
+): Promise<ExportBundle> {
   const bundle: ExportBundle = {
     generatedAt: new Date().toISOString(),
     url: client.url,
@@ -383,6 +468,14 @@ async function fetchResources(client: GrafanaClient, resources: ResourceName[]):
       }
 
       if (resource === "dashboards") {
+        if (options.dashboardApi === "v2") {
+          const list = asObject(await client.request<unknown>("GET", DashboardResourceApiBase));
+          bundle.dashboards = asObjectArray(list?.items)
+            .filter(isDashboardResourceV2)
+            .map((item) => addType(sanitizeDashboardResourceV2(item), "dashboard-v2"));
+          continue;
+        }
+
         const list = asObjectArray(
           await client.request<unknown[]>("GET", "/api/search?type=dash-db&limit=5000"),
         );
@@ -447,9 +540,13 @@ async function fetchResources(client: GrafanaClient, resources: ResourceName[]):
 
 function dashboardFileName(item: JsonObject, used: Set<string>) {
   const dashboard = getObjectField(item, "dashboard") || item;
-  const uid = asString(item.uid) || asString(dashboard.uid);
-  const title = asString(item.title) || asString(dashboard.title) || uid || "dashboard";
-  const base = uid ? safeName(uid) : safeName(title);
+  const uid = isDashboardResourceV2(item)
+    ? dashboardResourceV2Name(item)
+    : asString(item.uid) || asString(dashboard.uid);
+  const title = isDashboardResourceV2(item)
+    ? dashboardResourceV2Title(item)
+    : asString(item.title) || asString(dashboard.title) || uid || "dashboard";
+  const base = uid ? safeName(uid) : safeName(title || "dashboard");
   return `${uniqueBaseName(base, used)}.json`;
 }
 
@@ -501,11 +598,24 @@ function bundleToFiles(outDir: string, bundle: ExportBundle, pretty: boolean) {
 
   // Split dump for easier review and git diff.
   if (Array.isArray(bundle.dashboards)) {
-    const dir = path.join(outDir, "dashboard");
+    const hasV2Dashboards = asObjectArray(bundle.dashboards).some(isDashboardResourceV2);
+    const dir = path.join(outDir, hasV2Dashboards ? "dashboard-v2" : "dashboard");
     resetDir(dir);
     const folderMap = folderTitleByUid(bundle);
     const usedByDir = new Map<string, Set<string>>();
     for (const item of asObjectArray(bundle.dashboards)) {
+      if (isDashboardResourceV2(item)) {
+        const used = usedByDir.get(dir) || new Set<string>();
+        usedByDir.set(dir, used);
+        const filename = dashboardFileName(item, used);
+        writeJson(
+          path.join(dir, filename),
+          addType(sanitizeDashboardResourceV2(item), "dashboard-v2"),
+          pretty,
+        );
+        continue;
+      }
+
       const dashboard = getObjectField(item, "dashboard") || item;
       const folderUid = asString(item.folderUid);
       const folderTitle = folderUid ? folderMap.get(folderUid) || folderUid : undefined;
@@ -600,6 +710,7 @@ function dedupeResources(resources: ResourceName[]): ResourceName[] {
 function resourceFromType(type: string | undefined): ResourceName | undefined {
   switch (type) {
     case "dashboard":
+    case "dashboard-v2":
       return "dashboards";
     case "connection":
     case "datasource":
@@ -636,7 +747,7 @@ function parseResourceAlias(value: string | undefined): ResourceName | undefined
 function resourceFromFilePath(filePath: string): ResourceName | undefined {
   // Collect should not rely on file name patterns, only location and JSON type.
   const dir = path.basename(path.dirname(filePath)).toLowerCase();
-  if (dir === "dashboard") return "dashboards";
+  if (dir === "dashboard" || dir === "dashboard-v2") return "dashboards";
   if (dir === "connection") return "datasources";
   if (dir === "folder") return "folders";
   if (dir === "alert-rule") return "alert-rules";
@@ -647,6 +758,7 @@ function resourceFromFilePath(filePath: string): ResourceName | undefined {
 
 function inferResourceFromObject(value: JsonObject): ResourceName | undefined {
   if (value.__type === "dashboard-meta" || value.__type === "grafana-manifest") return undefined;
+  if (isDashboardResourceV2(value)) return "dashboards";
   if (value.dashboard && typeof value.dashboard === "object") return "dashboards";
   if (value.panels || value.schemaVersion !== undefined || value.templating || value.time)
     return "dashboards";
@@ -719,6 +831,7 @@ function folderMetaForDir(dir: string): JsonObject | undefined {
 }
 
 function withDashboardMetadata(filePath: string, value: JsonObject): JsonObject {
+  if (isDashboardResourceV2(value)) return value;
   if (value.dashboard && typeof value.dashboard === "object") return value;
   const meta = metadataForJsonFile(filePath);
   const folderMeta = folderMetaForDir(path.dirname(filePath));
@@ -841,7 +954,14 @@ function dedupeBundleEntries(bundle: ExportBundle) {
 function keyFor(resource: ResourceName, item: unknown): string {
   const obj = asObject(item);
   const dashboard = obj ? getObjectField(obj, "dashboard") : undefined;
-  if (resource === "dashboards") return String(obj?.uid || dashboard?.uid || obj?.title || hashObject(item));
+  if (resource === "dashboards")
+    return String(
+      (obj && isDashboardResourceV2(obj) ? dashboardResourceV2Name(obj) : undefined) ||
+        obj?.uid ||
+        dashboard?.uid ||
+        obj?.title ||
+        hashObject(item),
+    );
   if (resource === "datasources") return String(obj?.uid || obj?.name || hashObject(item));
   if (resource === "folders") return String(obj?.uid || obj?.title || hashObject(item));
   if (resource === "alert-rules") return String(obj?.title || obj?.name || obj?.uid || hashObject(item));
@@ -849,24 +969,32 @@ function keyFor(resource: ResourceName, item: unknown): string {
   return hashObject(item);
 }
 
+function canonicalDiffItem(resource: ResourceName, item: unknown): unknown {
+  if (resource === "dashboards" && isDashboardResourceV2(item)) {
+    return addType(sanitizeDashboardResourceV2(item), "dashboard-v2");
+  }
+  return item;
+}
+
 function diffArray(
   resource: ResourceName,
   localData: unknown[] = [],
   remoteData: unknown[] = [],
+  options: { localOnly?: boolean } = {},
 ): DiffItem[] {
   const localMap = new Map<string, string>();
   const remoteMap = new Map<string, string>();
 
   for (const item of localData) {
     const key = keyFor(resource, item);
-    localMap.set(key, hashObject(item));
+    localMap.set(key, hashObject(canonicalDiffItem(resource, item)));
   }
   for (const item of remoteData) {
     const key = keyFor(resource, item);
-    remoteMap.set(key, hashObject(item));
+    remoteMap.set(key, hashObject(canonicalDiffItem(resource, item)));
   }
 
-  const allKeys = new Set([...localMap.keys(), ...remoteMap.keys()]);
+  const allKeys = new Set(options.localOnly ? localMap.keys() : [...localMap.keys(), ...remoteMap.keys()]);
   const diff: DiffItem[] = [];
 
   for (const key of Array.from(allKeys).sort()) {
@@ -1043,19 +1171,38 @@ function selectResource(
     found = found.filter((item) => {
       const obj = asObject(item);
       const dashboard = obj ? getObjectField(obj, "dashboard") : undefined;
-      return String(obj?.uid || dashboard?.uid || "") === uid;
+      return (
+        String(
+          (obj && isDashboardResourceV2(obj) ? dashboardResourceV2Name(obj) : undefined) ||
+            obj?.uid ||
+            dashboard?.uid ||
+            "",
+        ) === uid
+      );
     });
   }
   if (selector.name) {
     const name = selector.name;
-    found = found.filter((item) => String(asObject(item)?.name || "") === name);
+    found = found.filter((item) => {
+      const obj = asObject(item);
+      const itemName =
+        (obj && isDashboardResourceV2(obj) ? dashboardResourceV2Name(obj) : undefined) || obj?.name;
+      return String(itemName || "") === name;
+    });
   }
   if (selector.title) {
     const title = selector.title;
     found = found.filter((item) => {
       const obj = asObject(item);
       const dashboard = obj ? getObjectField(obj, "dashboard") : undefined;
-      return String(obj?.title || dashboard?.title || "") === title;
+      return (
+        String(
+          (obj && isDashboardResourceV2(obj) ? dashboardResourceV2Title(obj) : undefined) ||
+            obj?.title ||
+            dashboard?.title ||
+            "",
+        ) === title
+      );
     });
   }
   for (const whereExpr of selector.where) {
@@ -1224,6 +1371,7 @@ async function resolveDatasourceByIdentifier(
 }
 
 function dashboardTitleOf(item: JsonObject): string {
+  if (isDashboardResourceV2(item)) return dashboardResourceV2Title(item) || "(untitled dashboard)";
   const title = asString(item.title);
   const dashboard = getObjectField(item, "dashboard");
   return title || asString(dashboard?.title) || asString(item.uid) || "(untitled dashboard)";
@@ -1300,12 +1448,51 @@ function rowsToTable(rows: ListRow[]): string {
   return renderTable(headers, body);
 }
 
+function v2DatasourceType(group: string | undefined): string | undefined {
+  if (!group) return undefined;
+  if (group === "prometheus") return "prometheus";
+  if (group === "grafana-postgresql-datasource") return "grafana-postgresql-datasource";
+  if (group === "tencent-cls-grafana-datasource") return "tencent-cls-grafana-datasource";
+  return group;
+}
+
 function extractPanelTargets(panel: JsonObject): DashboardTarget[] {
   const targets = asObjectArray(panel.targets);
-  return targets.map((target, index) => ({
-    refId: asString(target.refId) || String.fromCharCode(65 + index),
-    raw: target,
-  }));
+  if (targets.length > 0) {
+    return targets.map((target, index) => ({
+      refId: asString(target.refId) || String.fromCharCode(65 + index),
+      raw: target,
+    }));
+  }
+
+  const queryGroup = getObjectField(panel.data, "spec");
+  const queries = asObjectArray(queryGroup?.queries);
+  return queries
+    .map((panelQuery, index) => {
+      const panelQuerySpec = getObjectField(panelQuery, "spec");
+      const query = getObjectField(panelQuerySpec, "query");
+      const querySpec = getObjectField(query, "spec");
+      if (!querySpec) return undefined;
+      const datasource = getObjectField(query, "datasource");
+      const group = asString(query?.group);
+      const datasourceUid = asString(datasource?.uid) || asString(datasource?.name);
+      const datasourceType = asString(datasource?.type) || v2DatasourceType(group);
+      const raw = {
+        ...querySpec,
+        refId:
+          asString(panelQuerySpec?.refId) || asString(querySpec.refId) || String.fromCharCode(65 + index),
+        datasource: {
+          ...datasource,
+          uid: datasourceUid,
+          type: datasourceType,
+        },
+      } as JsonObject;
+      return {
+        refId: asString(raw.refId) || String.fromCharCode(65 + index),
+        raw,
+      };
+    })
+    .filter((target): target is DashboardTarget => Boolean(target));
 }
 
 function collectPanels(input: unknown): JsonObject[] {
@@ -1317,9 +1504,35 @@ function collectPanels(input: unknown): JsonObject[] {
   return panels;
 }
 
+function collectDashboardPanels(dashboardEntry: JsonObject): JsonObject[] {
+  if (isDashboardResourceV2(dashboardEntry)) {
+    const spec = getObjectField(dashboardEntry, "spec");
+    const elements = getObjectField(spec, "elements");
+    return Object.values(elements || {})
+      .map((element) => asObject(element))
+      .filter((element): element is JsonObject => asString(element?.kind) === "Panel")
+      .map((element) => ({ ...(getObjectField(element, "spec") || {}) }));
+  }
+
+  const dashboard = getObjectField(dashboardEntry, "dashboard") || dashboardEntry;
+  return collectPanels(dashboard.panels);
+}
+
 function collectDashboards(bundle: ExportBundle): JsonObject[] {
   return asObjectArray(bundle.dashboards)
     .map((entry) => {
+      if (isDashboardResourceV2(entry)) {
+        const spec = getObjectField(entry, "spec") || {};
+        const title = dashboardResourceV2Title(entry);
+        const uid = dashboardResourceV2Name(entry);
+        return {
+          ...entry,
+          title,
+          uid,
+          dashboard: spec,
+        } as JsonObject;
+      }
+
       const dashboard = getObjectField(entry, "dashboard") || entry;
       const title = asString(entry.title) || asString(dashboard.title);
       const uid = asString(entry.uid) || asString(dashboard.uid);
@@ -1428,7 +1641,7 @@ function validateDashboardPromQLSyntax(
       ...extractTemplatingValues(dashboard),
       ...(options.vars || {}),
     };
-    for (const panel of collectPanels(dashboard.panels)) {
+    for (const panel of collectDashboardPanels(dashboardEntry)) {
       for (const target of extractPanelTargets(panel)) {
         const issue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, {
           macroMode: options.macroMode,
@@ -1444,6 +1657,49 @@ function validateDashboardPromQLSyntax(
     }
   }
   return errors;
+}
+
+function buildValidateQueryBody(
+  target: DashboardTarget,
+  options: {
+    datasourceUid: string;
+    vars: TemplateVars;
+    fromMs: number;
+    toMs: number;
+    intervalMs: number;
+  },
+): JsonObject | undefined {
+  const rawSql = asString(target.raw.rawSql) || asString(target.raw.rawQuery);
+  const expr = asString(target.raw.expr);
+  const logServiceParams = getObjectField(target.raw, "logServiceParams");
+  const logServiceQuery = asString(logServiceParams?.Query);
+  if (!rawSql && !expr && !logServiceQuery) return undefined;
+
+  const maxDataPoints = Number.parseInt(String(target.raw.maxDataPoints || "1000"), 10) || 1000;
+  const queryVars = {
+    ...options.vars,
+    __cls_interval: calcClsInterval(options.fromMs, options.toMs, maxDataPoints),
+  };
+  const targetDatasource = asObject(target.raw.datasource) || {};
+  const queryTemplate: JsonObject = logServiceQuery
+    ? {
+        ...target.raw,
+        refId: target.refId,
+        datasource: { ...targetDatasource, uid: options.datasourceUid },
+        intervalMs: options.intervalMs,
+        maxDataPoints,
+      }
+    : {
+        refId: target.refId,
+        datasource: { uid: options.datasourceUid },
+        rawSql,
+        rawQuery: rawSql,
+        expr,
+        format: asString(target.raw.format) || "table",
+        intervalMs: options.intervalMs,
+        maxDataPoints,
+      };
+  return resolveTemplateValue(queryTemplate, queryVars) as JsonObject;
 }
 
 async function validateDashboards(
@@ -1493,7 +1749,7 @@ async function validateDashboards(
       ...options.vars,
     };
 
-    const panels = collectPanels(dashboard.panels);
+    const panels = collectDashboardPanels(dashboardEntry);
     const tasks: Array<{ panel: JsonObject; target: DashboardTarget }> = [];
     for (const panel of panels) {
       for (const target of extractPanelTargets(panel)) {
@@ -1521,7 +1777,6 @@ async function validateDashboards(
       if (datasourceType && onlyDatasourceTypes.size > 0 && !onlyDatasourceTypes.has(datasourceType)) return;
       if (datasourceType && skipDatasourceTypes.has(datasourceType)) return;
 
-      const expr = asString(target.raw.expr);
       if (isPrometheusDatasourceType(datasourceType)) {
         const syntaxIssue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, {
           macroMode: options.promqlMacroMode,
@@ -1570,27 +1825,14 @@ async function validateDashboards(
         return;
       }
 
-      const rawSql = asString(target.raw.rawSql) || asString(target.raw.rawQuery);
-      if (!rawSql && !expr) return;
-
-      const maxDataPoints = Number.parseInt(String(target.raw.maxDataPoints || "1000"), 10) || 1000;
-      const queryVars = {
-        ...dashboardVars,
-        __cls_interval: calcClsInterval(fromMs, toMs, maxDataPoints),
-      };
-      const queryBody = resolveTemplateValue(
-        {
-          refId: target.refId,
-          datasource: { uid: datasourceUid },
-          rawSql,
-          rawQuery: rawSql,
-          expr,
-          format: asString(target.raw.format) || "table",
-          intervalMs: options.intervalMs,
-          maxDataPoints,
-        },
-        queryVars,
-      ) as JsonObject;
+      const queryBody = buildValidateQueryBody(target, {
+        datasourceUid,
+        vars: dashboardVars,
+        fromMs,
+        toMs,
+        intervalMs: options.intervalMs,
+      });
+      if (!queryBody) return;
       const unresolvedTokens = findUnresolvedTemplateTokens(queryBody);
       if (unresolvedTokens.length > 0) {
         warnings.push({
@@ -1886,6 +2128,42 @@ async function importResources(
       message: `Import dashboards: ${bundle.dashboards.length}`,
     });
     for (const item of asObjectArray(bundle.dashboards)) {
+      if (isDashboardResourceV2(item)) {
+        const resource = sanitizeDashboardResourceV2(item);
+        const name = dashboardResourceV2Name(resource);
+        const title = dashboardResourceV2Title(resource);
+        if (!name) throw new Error(`Dashboard v2 resource needs metadata.name: ${title || "(untitled)"}`);
+        const key = name || title || "(unknown)";
+        if (ctx.dryRun) {
+          printData(ctx, "dry-run", {
+            resource: "dashboards",
+            api: "v2",
+            action: "upsert",
+            key,
+            message: `[DRY-RUN] dashboard v2 upsert ${key}`,
+          });
+          continue;
+        }
+
+        const existing = await client.requestWithStatus<JsonObject>("GET", dashboardResourceV2Path(name));
+        if (existing.status === 200 && asObject(existing.data)) {
+          const existingMeta = getObjectField(existing.data, "metadata");
+          const resourceVersion = asString(existingMeta?.resourceVersion);
+          if (resourceVersion) {
+            const metadata = getObjectField(resource, "metadata") || {};
+            metadata.resourceVersion = resourceVersion;
+            resource.metadata = metadata;
+          }
+          await client.request("PUT", dashboardResourceV2Path(name), resource, [200]);
+        } else if (existing.status === 404) {
+          await client.request("POST", DashboardResourceApiBase, resource, [201, 200]);
+        } else {
+          const message = typeof existing.data === "string" ? existing.data : JSON.stringify(existing.data);
+          throw new Error(`${existing.status} GET ${dashboardResourceV2Path(name)}: ${message}`);
+        }
+        continue;
+      }
+
       const cleanItem = asObject(stripMeta(item));
       if (!cleanItem) continue;
       const dashboard = getObjectField(cleanItem, "dashboard") || cleanItem;
@@ -2089,6 +2367,8 @@ export async function run() {
     parseResources,
     parseResourceAlias,
     dedupeResources,
+    isDashboardResourceV2,
+    dashboardResourceV2HasTabs,
     collectBundle,
     fetchResources,
     bundleToFiles,
@@ -2295,6 +2575,14 @@ export const __test__ = {
   parseResourceAlias,
   resourceFromType,
   inferResourceFromObject,
+  isDashboardResourceV2,
+  sanitizeDashboardResourceV2,
+  dashboardResourceV2Name,
+  dashboardResourceV2Title,
+  dashboardResourceV2HasTabs,
+  collectDashboardPanels,
+  extractPanelTargets,
+  collectDashboards,
   parseWhereExpr,
   parseSetExpr,
   parseRenderVar,
@@ -2316,5 +2604,7 @@ export const __test__ = {
   setPathValue,
   deepMerge,
   validateDashboardPromQLSyntax,
+  buildValidateQueryBody,
+  diffArray,
   writeJson,
 };

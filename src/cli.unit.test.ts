@@ -27,6 +27,14 @@ describe("cli internal unit tests", () => {
 
   it("infers resource type from object payload", () => {
     expect(__test__.inferResourceFromObject({ dashboard: { uid: "x" } })).toBe("dashboards");
+    expect(
+      __test__.inferResourceFromObject({
+        apiVersion: "dashboard.grafana.app/v2beta1",
+        kind: "Dashboard",
+        metadata: { name: "fusion" },
+        spec: { title: "fusion" },
+      }),
+    ).toBe("dashboards");
     expect(__test__.inferResourceFromObject({ uid: "u1", title: "Folder A" })).toBe("folders");
     expect(__test__.inferResourceFromObject({ name: "d1", type: "testdata", access: "proxy" })).toBe(
       "datasources",
@@ -88,6 +96,31 @@ describe("cli internal unit tests", () => {
       },
     });
     expect(vars.env).toEqual(["prod", "staging", "dev"]);
+  });
+
+  it("extracts empty textbox variables for validation", () => {
+    const vars = __test__.extractTemplatingValues({
+      templating: { list: [{ name: "filter", type: "textbox", current: { value: "" } }] },
+    });
+    expect(vars.filter).toBe("");
+  });
+
+  it("extracts Grafana dashboard v2 variables", () => {
+    const vars = __test__.extractTemplatingValues({
+      variables: [
+        { kind: "CustomVariable", spec: { name: "env", current: { value: "novita" } } },
+        {
+          kind: "CustomVariable",
+          spec: {
+            name: "provider",
+            current: { value: "$__all" },
+            allValue: ".*",
+          },
+        },
+      ],
+    });
+    expect(vars.env).toBe("novita");
+    expect(vars.provider).toBe(".*");
   });
 
   it("supports where/set expressions", () => {
@@ -234,6 +267,151 @@ describe("cli internal unit tests", () => {
       "$__unknown",
       knownCsv,
     ]);
+  });
+
+  it("extracts Grafana dashboard v2 panels and queries", () => {
+    const dashboard = {
+      apiVersion: "dashboard.grafana.app/v2beta1",
+      kind: "Dashboard",
+      metadata: { name: "fusion", uid: "runtime-uid", resourceVersion: "1" },
+      spec: {
+        title: "fusion",
+        elements: {
+          "panel-1": {
+            kind: "Panel",
+            spec: {
+              id: 1,
+              title: "RPM",
+              data: {
+                kind: "QueryGroup",
+                spec: {
+                  queries: [
+                    {
+                      kind: "PanelQuery",
+                      spec: {
+                        refId: "A",
+                        query: {
+                          kind: "DataQuery",
+                          group: "prometheus",
+                          version: "v0",
+                          datasource: { name: "$" + "{env}" },
+                          spec: { expr: "up", range: true },
+                        },
+                      },
+                    },
+                  ],
+                  transformations: [],
+                  queryOptions: {},
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    expect(__test__.isDashboardResourceV2(dashboard)).toBe(true);
+    expect(__test__.dashboardResourceV2Name(dashboard)).toBe("fusion");
+    expect(__test__.dashboardResourceV2Title(dashboard)).toBe("fusion");
+    expect(
+      __test__.dashboardResourceV2HasTabs({
+        ...dashboard,
+        spec: { ...dashboard.spec, layout: { kind: "TabsLayout", spec: { tabs: [] } } },
+      }),
+    ).toBe(true);
+    const sanitized = __test__.sanitizeDashboardResourceV2(dashboard);
+    expect(sanitized.metadata).toEqual({ name: "fusion" });
+    expect(
+      __test__.sanitizeDashboardResourceV2({
+        apiVersion: "dashboard.grafana.app/v2beta1",
+        kind: "Dashboard",
+        metadata: {},
+        spec: { uid: "from-spec", title: "From Spec" },
+      }).metadata,
+    ).toEqual({ name: "from-spec" });
+    const panels = __test__.collectDashboardPanels(dashboard);
+    expect(panels).toHaveLength(1);
+    const targets = __test__.extractPanelTargets(panels[0] as Record<string, unknown>);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.raw).toMatchObject({
+      expr: "up",
+      datasource: { uid: "$" + "{env}", type: "prometheus" },
+    });
+  });
+
+  it("diffs dashboard v2 resources without runtime metadata noise", () => {
+    const local = {
+      __type: "dashboard-v2",
+      apiVersion: "dashboard.grafana.app/v2beta1",
+      kind: "Dashboard",
+      metadata: { name: "fusion" },
+      spec: { title: "fusion", layout: { kind: "TabsLayout", spec: { tabs: [] } } },
+    };
+    const remote = {
+      apiVersion: "dashboard.grafana.app/v2beta1",
+      kind: "Dashboard",
+      metadata: {
+        name: "fusion",
+        namespace: "default",
+        uid: "runtime-uid",
+        resourceVersion: "42",
+        annotations: {
+          "grafana.app/createdBy": "service-account:1",
+          "grafana.app/updatedBy": "service-account:1",
+          "grafana.app/updatedTimestamp": "2026-06-25T00:00:00Z",
+        },
+        labels: { "grafana.app/deprecatedInternalID": "123" },
+      },
+      spec: { title: "fusion", layout: { kind: "TabsLayout", spec: { tabs: [] } } },
+    };
+
+    expect(__test__.diffArray("dashboards", [local], [remote])).toEqual([]);
+  });
+
+  it("can diff only resources present locally", () => {
+    const local = [{ uid: "a", title: "A" }];
+    const remote = [
+      { uid: "a", title: "A" },
+      { uid: "b", title: "B" },
+    ];
+
+    expect(__test__.diffArray("dashboards", local, remote)).toEqual([{ key: "b", change: "removed" }]);
+    expect(__test__.diffArray("dashboards", local, remote, { localOnly: true })).toEqual([]);
+  });
+
+  it("builds validate query body for CLS logService targets", () => {
+    const body = __test__.buildValidateQueryBody(
+      {
+        refId: "A",
+        raw: {
+          refId: "A",
+          serviceType: "logService",
+          datasource: { type: "tencent-cls-grafana-datasource", uid: "$" + "{cls_ds}" },
+          logServiceParams: {
+            TopicId: "$" + "{topic}",
+            SyntaxRule: 1,
+            format: "Table Panel",
+            Query: 'msg:"RequestDone" $' + "{filter:raw} | SELECT count(*) as value FROM log",
+          },
+        },
+      },
+      {
+        datasourceUid: "cls-uid",
+        vars: { cls_ds: "cls-uid", topic: "faas-llm-api-logs", filter: 'user_id:"u1"' },
+        fromMs: 0,
+        toMs: 3_600_000,
+        intervalMs: 60_000,
+      },
+    );
+
+    expect(body?.serviceType).toBe("logService");
+    expect(body?.datasource).toEqual({ type: "tencent-cls-grafana-datasource", uid: "cls-uid" });
+    expect(body?.logServiceParams).toMatchObject({
+      TopicId: "faas-llm-api-logs",
+      SyntaxRule: 1,
+      format: "Table Panel",
+      Query: 'msg:"RequestDone" user_id:"u1" | SELECT count(*) as value FROM log',
+    });
   });
 
   it("gets and sets nested path values", () => {
