@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { __test__ } from "./cli";
 import { parsePanelRef, replacePanelInDashboard } from "./commands/build-panel";
@@ -23,6 +26,30 @@ describe("cli internal unit tests", () => {
 
   it("fails for unsupported resources", () => {
     expect(() => __test__.parseResources("invalid-resource")).toThrow("Unsupported resource");
+  });
+
+  it("rejects duplicate dashboard UIDs from multiple source files", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "wode-gf-cli-duplicate-dashboard-"));
+    try {
+      writeFileSync(
+        path.join(dir, "classic.json"),
+        JSON.stringify({ __type: "dashboard", dashboard: { uid: "same", title: "Classic" } }),
+      );
+      writeFileSync(
+        path.join(dir, "v2.json"),
+        JSON.stringify({
+          __type: "dashboard-v2",
+          apiVersion: "dashboard.grafana.app/v2beta1",
+          kind: "Dashboard",
+          metadata: { name: "same" },
+          spec: { title: "V2", layout: { kind: "TabsLayout", spec: { tabs: [] } } },
+        }),
+      );
+
+      expect(() => __test__.collectBundle([dir])).toThrow(/Duplicate dashboard key "same"/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("infers resource type from object payload", () => {
@@ -267,6 +294,42 @@ describe("cli internal unit tests", () => {
       "$__unknown",
       knownCsv,
     ]);
+  });
+
+  it("normalizes classic wrapper and naked dashboards without v2 spec access", () => {
+    const wrapper = {
+      __type: "grafana-dashboard",
+      dashboard: {
+        uid: "classic-wrapper",
+        title: "Classic Wrapper",
+        panels: [
+          {
+            id: 1,
+            title: "SQL",
+            type: "table",
+            targets: [{ refId: "A", datasource: { uid: "pg", type: "postgres" }, rawSql: "select 1" }],
+          },
+          { id: 2, title: "No Targets", type: "text" },
+        ],
+      },
+    };
+    const naked = {
+      uid: "classic-naked",
+      title: "Classic Naked",
+      panels: [{ id: 3, title: "Empty", type: "timeseries" }],
+    };
+
+    expect(__test__.normalizeDashboardInput(wrapper)?.format).toBe("classic");
+    expect(__test__.normalizeDashboardInput(naked)?.format).toBe("classic");
+    expect(__test__.collectDashboardPanels(wrapper).map((panel) => panel.title)).toEqual([
+      "SQL",
+      "No Targets",
+    ]);
+    expect(__test__.extractPanelTargets(wrapper.dashboard.panels[0] as Record<string, unknown>)).toHaveLength(
+      1,
+    );
+    expect(__test__.extractPanelTargets(wrapper.dashboard.panels[1] as Record<string, unknown>)).toEqual([]);
+    expect(__test__.extractPanelTargets(naked.panels[0] as Record<string, unknown>)).toEqual([]);
   });
 
   it("extracts Grafana dashboard v2 panels and queries", () => {

@@ -16,6 +16,7 @@ export function asString(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-export function getObjectField(obj: JsonObject, key: string): JsonObject | undefined {
-  return asObject(obj[key]);
+export function getObjectField(obj: unknown, key: string): JsonObject | undefined {
+  const base = asObject(obj);
+  return base ? asObject(base[key]) : undefined;
 }

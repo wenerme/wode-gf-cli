@@ -94,11 +94,23 @@ export function buildValidateCommand(app: CommandAppContext) {
 
       for (const [dashboardTitle, items] of dashboardGroups.entries()) {
         const totalPanels = new Set(items.map((item) => item.panelId)).size;
+        const sourceFiles = Array.from(new Set(items.map((item) => item.sourceFile).filter(Boolean)));
         printMessage(ctx, `[ERROR] Dashboard: ${dashboardTitle}`);
+        if (sourceFiles.length > 0) printMessage(ctx, `  File: ${sourceFiles.join(", ")}`);
         for (const item of items) {
+          const location = [
+            item.sourceFile ? `file=${item.sourceFile}` : undefined,
+            `panel=${item.panelTitle}`,
+            `id=${item.panelId}`,
+            `refId=${item.refId}`,
+            item.datasourceUid ? `ds=${item.datasourceUid}` : undefined,
+            item.datasourceType ? `type=${item.datasourceType}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(" / ");
           printMessage(
             ctx,
-            `  Panel: ${item.panelTitle} (id=${item.panelId}) / refId=${item.refId}${item.datasourceType ? ` / type=${item.datasourceType}` : ""}\n  ERROR: ${item.kind === "promql-syntax" ? "promql syntax" : "query error"} — ${item.message}`,
+            `  ${location}\n  ERROR: ${item.kind === "promql-syntax" ? "promql syntax" : "query error"} — ${item.message}`,
           );
         }
         printMessage(ctx, `  Summary: ${items.length} errors across ${totalPanels} panels`);
@@ -112,7 +124,7 @@ export function buildValidateCommand(app: CommandAppContext) {
       for (const warning of warnings) {
         printMessage(
           ctx,
-          `[WARN] Dashboard: ${warning.dashboardTitle} / Panel: ${warning.panelTitle} (id=${warning.panelId}) / refId=${warning.refId}${warning.datasourceType ? ` / type=${warning.datasourceType}` : ""} / ${warning.kind === "no-data" ? `WARN: no data returned` : warning.message}`,
+          `[WARN] Dashboard: ${warning.dashboardTitle}${warning.sourceFile ? ` / File: ${warning.sourceFile}` : ""} / Panel: ${warning.panelTitle} (id=${warning.panelId}) / refId=${warning.refId}${warning.datasourceUid ? ` / ds=${warning.datasourceUid}` : ""}${warning.datasourceType ? ` / type=${warning.datasourceType}` : ""} / ${warning.kind === "no-data" ? `WARN: no data returned` : warning.message}`,
         );
       }
 

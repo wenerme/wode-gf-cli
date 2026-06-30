@@ -811,6 +811,21 @@ function mergeBundle(target: ExportBundle, from: ExportBundle) {
   if (from.policies !== undefined) appendEntry(target, "policies", from.policies);
 }
 
+const SourceFileSymbol = Symbol("sourceFile");
+
+function attachSourceFile<T>(value: T, filePath: string): T {
+  if (value && typeof value === "object") {
+    Object.defineProperty(value, SourceFileSymbol, { value: filePath, configurable: true });
+  }
+  return value;
+}
+
+function sourceFileOf(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const file = (value as Record<symbol, unknown>)[SourceFileSymbol];
+  return typeof file === "string" ? file : undefined;
+}
+
 function loadJsonFile(filePath: string): unknown {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
@@ -864,7 +879,12 @@ function applyJsonFileToBundle(
     );
     const inferred = typed[0] ? inferResourceFromObject(typed[0]) : undefined;
     const resource = fromType || fallback || inferred;
-    if (resource) appendEntry(bundle, resource, typed);
+    if (resource)
+      appendEntry(
+        bundle,
+        resource,
+        typed.map((item) => attachSourceFile(item, filePath)),
+      );
     return;
   }
 
@@ -874,7 +894,8 @@ function applyJsonFileToBundle(
     const inferred = inferResourceFromObject(obj);
     const resource = byType || fallback || inferred;
     if (!resource) return;
-    appendEntry(bundle, resource, resource === "dashboards" ? withDashboardMetadata(filePath, obj) : obj);
+    const item = resource === "dashboards" ? withDashboardMetadata(filePath, obj) : obj;
+    appendEntry(bundle, resource, attachSourceFile(item, filePath));
   }
 }
 
@@ -938,7 +959,14 @@ function dedupeByKey(resource: ResourceName, items: unknown[] | undefined): unkn
   if (!Array.isArray(items)) return items;
   const map = new Map<string, unknown>();
   for (const item of items) {
-    map.set(keyFor(resource, item), item);
+    const key = keyFor(resource, item);
+    const previous = map.get(key);
+    if (previous && resource === "dashboards") {
+      const files = [sourceFileOf(previous), sourceFileOf(item)].filter(Boolean);
+      const fileHint = files.length > 0 ? ` Files: ${files.join(", ")}` : "";
+      throw new Error(`Duplicate dashboard key "${key}" in import sources.${fileHint}`);
+    }
+    map.set(key, item);
   }
   return Array.from(map.values());
 }
@@ -1250,6 +1278,7 @@ function parseSetExpr(expr: string, defaultPath?: string): { path: string; value
 }
 
 type ValidateIssueBase = {
+  sourceFile?: string;
   dashboardTitle: string;
   panelTitle: string;
   panelId: number;
@@ -1368,13 +1397,6 @@ async function resolveDatasourceByIdentifier(
     type: asString(matched.type),
     jsonData: getObjectField(matched, "jsonData"),
   };
-}
-
-function dashboardTitleOf(item: JsonObject): string {
-  if (isDashboardResourceV2(item)) return dashboardResourceV2Title(item) || "(untitled dashboard)";
-  const title = asString(item.title);
-  const dashboard = getObjectField(item, "dashboard");
-  return title || asString(dashboard?.title) || asString(item.uid) || "(untitled dashboard)";
 }
 
 function formatCell(value: unknown): string {
@@ -1504,44 +1526,69 @@ function collectPanels(input: unknown): JsonObject[] {
   return panels;
 }
 
-function collectDashboardPanels(dashboardEntry: JsonObject): JsonObject[] {
+type NormalizedDashboardInput = {
+  format: "classic" | "v2";
+  dashboard: JsonObject;
+  sourceFile?: string;
+  title: string;
+  uid?: string;
+};
+
+function normalizeDashboardInput(dashboardEntry: JsonObject): NormalizedDashboardInput | undefined {
+  const sourceFile = sourceFileOf(dashboardEntry);
   if (isDashboardResourceV2(dashboardEntry)) {
     const spec = getObjectField(dashboardEntry, "spec");
-    const elements = getObjectField(spec, "elements");
+    if (!spec) return undefined;
+    return {
+      format: "v2",
+      dashboard: spec,
+      sourceFile,
+      title: dashboardResourceV2Title(dashboardEntry) || "(untitled dashboard)",
+      uid: dashboardResourceV2Name(dashboardEntry),
+    };
+  }
+
+  const dashboard = getObjectField(dashboardEntry, "dashboard") || dashboardEntry;
+  if (!dashboard || isDashboardResourceV2(dashboard)) return undefined;
+  if (!dashboard.panels && !dashboard.rows && !dashboard.templating && !dashboard.title && !dashboard.uid) {
+    return undefined;
+  }
+  return {
+    format: "classic",
+    dashboard,
+    sourceFile,
+    title: asString(dashboardEntry.title) || asString(dashboard.title) || "(untitled dashboard)",
+    uid: asString(dashboardEntry.uid) || asString(dashboard.uid),
+  };
+}
+
+function collectDashboardPanels(dashboardEntry: JsonObject): JsonObject[] {
+  const normalized = normalizeDashboardInput(dashboardEntry);
+  if (!normalized) return [];
+  if (normalized.format === "v2") {
+    const elements = getObjectField(normalized.dashboard, "elements");
     return Object.values(elements || {})
       .map((element) => asObject(element))
       .filter((element): element is JsonObject => asString(element?.kind) === "Panel")
       .map((element) => ({ ...(getObjectField(element, "spec") || {}) }));
   }
 
-  const dashboard = getObjectField(dashboardEntry, "dashboard") || dashboardEntry;
-  return collectPanels(dashboard.panels);
+  return collectPanels(normalized.dashboard.panels);
 }
 
 function collectDashboards(bundle: ExportBundle): JsonObject[] {
   return asObjectArray(bundle.dashboards)
     .map((entry) => {
-      if (isDashboardResourceV2(entry)) {
-        const spec = getObjectField(entry, "spec") || {};
-        const title = dashboardResourceV2Title(entry);
-        const uid = dashboardResourceV2Name(entry);
-        return {
-          ...entry,
-          title,
-          uid,
-          dashboard: spec,
-        } as JsonObject;
-      }
-
-      const dashboard = getObjectField(entry, "dashboard") || entry;
-      const title = asString(entry.title) || asString(dashboard.title);
-      const uid = asString(entry.uid) || asString(dashboard.uid);
-      return {
+      const normalized = normalizeDashboardInput(entry);
+      if (!normalized) return undefined;
+      const out = {
         ...entry,
-        title,
-        uid,
-        dashboard,
+        title: normalized.title,
+        uid: normalized.uid,
+        dashboard: normalized.dashboard,
       } as JsonObject;
+      if (normalized.sourceFile) attachSourceFile(out, normalized.sourceFile);
+      return out;
     })
     .filter((v): v is JsonObject => Boolean(v));
 }
@@ -1557,8 +1604,10 @@ function promQLSyntaxIssue(
   message: string,
   datasourceUid?: string,
   datasourceType?: string,
+  sourceFile?: string,
 ): ValidateError {
   return {
+    sourceFile,
     dashboardTitle,
     panelTitle: asString(panel.title) || "(untitled panel)",
     panelId: Number.parseInt(String(panel.id || "0"), 10) || 0,
@@ -1585,6 +1634,7 @@ function validatePanelTargetPromQLSyntax(
     rangeMs?: number;
     datasourceUid?: string;
     datasourceType?: string;
+    sourceFile?: string;
     onWarning?: (message: string) => void;
   } = {},
 ): ValidateError | undefined {
@@ -1615,6 +1665,7 @@ function validatePanelTargetPromQLSyntax(
       message,
       options.datasourceUid,
       options.datasourceType,
+      options.sourceFile,
     );
   }
 }
@@ -1635,10 +1686,22 @@ function validateDashboardPromQLSyntax(
   const rangeMs = fromMs !== undefined && toMs !== undefined ? Math.max(0, toMs - fromMs) : undefined;
   const intervalMs = options.intervalMs ?? 60_000;
   for (const dashboardEntry of dashboards) {
-    const dashboard = getObjectField(dashboardEntry, "dashboard") || dashboardEntry;
-    const dashboardTitle = dashboardTitleOf(dashboardEntry);
+    const normalized = normalizeDashboardInput(dashboardEntry);
+    if (!normalized) {
+      errors.push({
+        sourceFile: sourceFileOf(dashboardEntry),
+        dashboardTitle: "(unknown dashboard)",
+        panelTitle: "(unknown panel)",
+        panelId: 0,
+        refId: "-",
+        kind: "query-error",
+        message: "Unsupported dashboard JSON format",
+      });
+      continue;
+    }
+    const dashboardTitle = normalized.title;
     const vars = {
-      ...extractTemplatingValues(dashboard),
+      ...extractTemplatingValues(normalized.dashboard),
       ...(options.vars || {}),
     };
     for (const panel of collectDashboardPanels(dashboardEntry)) {
@@ -1651,6 +1714,7 @@ function validateDashboardPromQLSyntax(
           intervalMs,
           rangeMs,
           datasourceType: "prometheus",
+          sourceFile: normalized.sourceFile,
         });
         if (issue) errors.push(issue);
       }
@@ -1740,11 +1804,22 @@ async function validateDashboards(
   }
 
   for (const dashboardEntry of dashboards) {
-    const dashboard = getObjectField(dashboardEntry, "dashboard");
-    if (!dashboard) continue;
-    const dashboardTitle = dashboardTitleOf(dashboardEntry);
+    const normalized = normalizeDashboardInput(dashboardEntry);
+    if (!normalized) {
+      errors.push({
+        sourceFile: sourceFileOf(dashboardEntry),
+        dashboardTitle: "(unknown dashboard)",
+        panelTitle: "(unknown panel)",
+        panelId: 0,
+        refId: "-",
+        kind: "query-error",
+        message: "Unsupported dashboard JSON format",
+      });
+      continue;
+    }
+    const dashboardTitle = normalized.title;
     const dashboardVars = {
-      ...extractTemplatingValues(dashboard),
+      ...extractTemplatingValues(normalized.dashboard),
       ...buildGrafanaMacros({ from: fromMs, to: toMs, intervalMs: options.intervalMs }),
       ...options.vars,
     };
@@ -1790,6 +1865,7 @@ async function validateDashboards(
           datasourceType,
           onWarning: (message) => {
             warnings.push({
+              sourceFile: normalized.sourceFile,
               dashboardTitle,
               panelTitle: asString(panel.title) || "(untitled panel)",
               panelId,
@@ -1815,6 +1891,7 @@ async function validateDashboards(
 
       if (!datasourceUid) {
         warnings.push({
+          sourceFile: normalized.sourceFile,
           dashboardTitle,
           panelTitle: asString(panel.title) || "(untitled panel)",
           panelId,
@@ -1836,6 +1913,7 @@ async function validateDashboards(
       const unresolvedTokens = findUnresolvedTemplateTokens(queryBody);
       if (unresolvedTokens.length > 0) {
         warnings.push({
+          sourceFile: normalized.sourceFile,
           dashboardTitle,
           panelTitle: asString(panel.title) || "(untitled panel)",
           panelId,
@@ -1862,6 +1940,7 @@ async function validateDashboards(
         : undefined;
       if (error) {
         errors.push({
+          sourceFile: normalized.sourceFile,
           dashboardTitle,
           panelTitle: asString(panel.title) || "(untitled panel)",
           panelId,
@@ -1883,6 +1962,7 @@ async function validateDashboards(
         const message =
           error || (typeof response.data === "string" ? response.data : JSON.stringify(response.data));
         errors.push({
+          sourceFile: normalized.sourceFile,
           dashboardTitle,
           panelTitle: asString(panel.title) || "(untitled panel)",
           panelId,
@@ -1897,6 +1977,7 @@ async function validateDashboards(
 
       if (!renderFramesText(response.data, target.refId)) {
         warnings.push({
+          sourceFile: normalized.sourceFile,
           dashboardTitle,
           panelTitle: asString(panel.title) || "(untitled panel)",
           panelId,
@@ -2580,9 +2661,11 @@ export const __test__ = {
   dashboardResourceV2Name,
   dashboardResourceV2Title,
   dashboardResourceV2HasTabs,
+  normalizeDashboardInput,
   collectDashboardPanels,
   extractPanelTargets,
   collectDashboards,
+  collectBundle,
   parseWhereExpr,
   parseSetExpr,
   parseRenderVar,

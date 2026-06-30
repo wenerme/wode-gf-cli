@@ -25,6 +25,7 @@ export type QueryModeFlags = {
 };
 
 export type ValidateIssue = {
+  sourceFile?: string;
   dashboardTitle: string;
   panelTitle: string;
   panelId: number;
