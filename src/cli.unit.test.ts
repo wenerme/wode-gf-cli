@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -95,6 +95,33 @@ describe("cli internal unit tests", () => {
     expect(parsed.contexts[1]?.name).toBe("local");
     expect(parsed.contexts[1]?.username).toBe("admin");
     expect(parsed.contexts[1]?.serviceAccountToken).toBe("glsa_xxx");
+  });
+
+  it("discovers project config from nearest git root", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "wode-gf-cli-project-config-"));
+    const previousCwd = process.cwd();
+    try {
+      const nested = path.join(dir, "a", "b");
+      writeFileSync(path.join(dir, ".git"), "gitdir: .git/worktrees/test\n");
+      mkdirSync(path.join(dir, ".wode"), { recursive: true });
+      writeFileSync(path.join(dir, ".wode", "wode-gf-cli.yaml"), "context: wener\n", {
+        flag: "w",
+      });
+      mkdirSync(nested, { recursive: true });
+
+      expect(__test__.findGitRoot(nested)).toBe(dir);
+      expect(__test__.getProjectConfigPath(nested)).toBe(path.join(dir, ".wode", "wode-gf-cli.yaml"));
+      expect(__test__.readProjectCliConfig(nested)).toEqual({
+        path: path.join(dir, ".wode", "wode-gf-cli.yaml"),
+        context: "wener",
+      });
+      process.chdir(nested);
+      expect(__test__.resolveContextName()).toBe("wener");
+      expect(__test__.resolveContextName({ context: "fusion" })).toBe("fusion");
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("migrates legacy profile keys to context keys", () => {
