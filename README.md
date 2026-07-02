@@ -122,9 +122,20 @@ export WODE_GF_CLI_CONTEXT=local
 wode-gf-cli export -o local/grafana-export
 ```
 
+Project default context:
+
+```yaml
+# <nearest-git-root>/.wode/wode-gf-cli.yaml
+context: local
+```
+
+The project config is discovered from the current working directory by walking up to the nearest `.git` root. Use it for non-secret defaults such as `context`; keep credentials in the global config or environment variables.
+
 Priority notes:
 
 - CLI flags override context / env values (`--url`, `--service-account-token`, `--username`, `--password`)
+- `--context` / `WODE_GF_CLI_CONTEXT` override project config context
+- project config context overrides the global default context
 - context config overrides env values
 - Shell env has higher priority than `.env` / `.env.local`
 - `--name` remains only as a compatibility alias; new docs use `context`

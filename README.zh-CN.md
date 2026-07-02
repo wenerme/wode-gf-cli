@@ -123,9 +123,20 @@ export WODE_GF_CLI_CONTEXT=local
 wode-gf-cli export -o local/grafana-export
 ```
 
+项目默认 context：
+
+```yaml
+# <nearest-git-root>/.wode/wode-gf-cli.yaml
+context: local
+```
+
+项目配置会从当前工作目录向上查找最近的 `.git` 根目录后读取。建议只放 `context` 这类非敏感默认值；凭据继续放全局配置或环境变量。
+
 优先级说明：
 
 - 命令行参数优先于 context / 环境变量（`--url`、`--service-account-token`、`--username`、`--password`）
+- `--context` / `WODE_GF_CLI_CONTEXT` 优先于项目配置 context
+- 项目配置 context 优先于全局默认 context
 - context 配置优先于环境变量
 - Shell 环境变量优先于 `.env` / `.env.local`
 - `--name` 仅保留为兼容别名；新配置与新文档统一使用 `context`

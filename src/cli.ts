@@ -235,6 +235,21 @@ function getConfigPath() {
   return path.join(home, ".wode", "wode-gf-cli.yaml");
 }
 
+function findGitRoot(startDir = process.cwd()): string | undefined {
+  let current = path.resolve(startDir);
+  for (;;) {
+    if (fs.existsSync(path.join(current, ".git"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+function getProjectConfigPath(startDir = process.cwd()): string | undefined {
+  const root = findGitRoot(startDir);
+  return root ? path.join(root, ".wode", "wode-gf-cli.yaml") : undefined;
+}
+
 function parseSimpleYamlConfig(content: string): {
   context: string;
   contexts: Array<Record<string, string>>;
@@ -305,6 +320,17 @@ function readCliConfig() {
   }
 }
 
+function readProjectCliConfig(startDir = process.cwd()): { path?: string; context?: string } {
+  const file = getProjectConfigPath(startDir);
+  if (!file) return {};
+  try {
+    const parsed = parseSimpleYamlConfig(migrateLegacyConfig(fs.readFileSync(file, "utf8")));
+    return { path: file, context: parsed.context || undefined };
+  } catch {
+    return { path: file };
+  }
+}
+
 function serializeCliConfig(config: { context: string; contexts: Array<Record<string, string>> }) {
   const lines = [`context: ${config.context}`, "contexts:"];
   const seen = new Set<string>();
@@ -352,6 +378,15 @@ function writeCliConfig(config: { context: string; contexts: Array<Record<string
   const file = getConfigPath();
   ensureDir(path.dirname(file));
   fs.writeFileSync(file, serializeCliConfig(config), "utf8");
+}
+
+function resolveContextName(options: { context?: string; name?: string } = {}): string | undefined {
+  return (
+    options.context?.trim() ||
+    options.name?.trim() ||
+    envValue(["WODE_GF_CLI_CONTEXT", "WODE_GF_CLI_NAME"]) ||
+    readProjectCliConfig().context
+  );
 }
 
 function getNamedContext(name: string | undefined) {
@@ -2030,8 +2065,7 @@ function parseCommonOptions(cmd: Command, cfg?: { requireUrl?: boolean }): Runti
     quiet?: boolean;
   };
 
-  const contextName =
-    options.context?.trim() || options.name?.trim() || envValue(["WODE_GF_CLI_CONTEXT", "WODE_GF_CLI_NAME"]);
+  const contextName = resolveContextName(options);
   if (options.name?.trim()) {
     console.warn("[WARN] --name is deprecated; prefer --context");
   }
@@ -2494,14 +2528,19 @@ export async function run() {
     .option("--json", "print contexts as json")
     .action(function contextListAction(options) {
       const config = readCliConfig();
+      const globalOptions = (this as unknown as Command).optsWithGlobals() as {
+        context?: string;
+        name?: string;
+      };
+      const currentContext = resolveContextName(globalOptions) || config.context || "default";
       const contexts = config.contexts.map((ctx) => ({
-        current: ctx.name === config.context,
+        current: ctx.name === currentContext,
         name: ctx.name || "default",
         baseUrl: ctx.baseUrl || null,
         authType: contextAuthType(ctx),
       }));
       if (options.json) {
-        console.log(JSON.stringify({ context: config.context, contexts }, null, 2));
+        console.log(JSON.stringify({ context: currentContext, contexts }, null, 2));
         return;
       }
       const rows = contexts.map((ctx) => [ctx.current ? "*" : "", ctx.name, ctx.baseUrl || "", ctx.authType]);
@@ -2513,7 +2552,12 @@ export async function run() {
     .option("--json", "print current context as json")
     .action(function contextCurrentAction(options) {
       const config = readCliConfig();
-      const view = formatContextView(config, config.context || "default");
+      const globalOptions = (this as unknown as Command).optsWithGlobals() as {
+        context?: string;
+        name?: string;
+      };
+      const currentContext = resolveContextName(globalOptions) || config.context || "default";
+      const view = formatContextView({ ...config, context: currentContext }, currentContext);
       if (options.json) {
         console.log(JSON.stringify(view, null, 2));
         return;
@@ -2652,6 +2696,10 @@ export const __test__ = {
   parseEnvFile,
   migrateLegacyConfig,
   parseSimpleYamlConfig,
+  findGitRoot,
+  getProjectConfigPath,
+  readProjectCliConfig,
+  resolveContextName,
   parseResources,
   parseResourceAlias,
   resourceFromType,
