@@ -79,9 +79,9 @@ Supported fields:
 Base commands:
 
 ```bash
-wode-gf-cli context list
-wode-gf-cli context current
-wode-gf-cli context use local
+wode-gf-cli context list       # alias: wode-gf-cli ctx list
+wode-gf-cli context current    # alias: wode-gf-cli ctx current
+wode-gf-cli context use local  # alias: wode-gf-cli ctx use local
 wode-gf-cli context set baseUrl=http://127.0.0.1:3300
 wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --service-account-token <token>
 wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --username admin --password admin

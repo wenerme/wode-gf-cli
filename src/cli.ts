@@ -2521,7 +2521,7 @@ export async function run() {
   };
   const app: CommandAppContext = { collectList, runtime };
 
-  const contextCommand = new Command("context").description("show and manage named contexts");
+  const contextCommand = new Command("context").alias("ctx").description("show and manage named contexts");
   contextCommand
     .command("list")
     .description("List contexts")

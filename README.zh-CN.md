@@ -79,9 +79,9 @@ contexts:
 基础命令：
 
 ```bash
-wode-gf-cli context list
-wode-gf-cli context current
-wode-gf-cli context use local
+wode-gf-cli context list       # 别名：wode-gf-cli ctx list
+wode-gf-cli context current    # 别名：wode-gf-cli ctx current
+wode-gf-cli context use local  # 别名：wode-gf-cli ctx use local
 wode-gf-cli context set baseUrl=http://127.0.0.1:3300
 wode-gf-cli context set password=secret --context local
 wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --service-account-token <token>
