@@ -28,7 +28,7 @@ export function parsePanelRef(ref: string): PanelRef {
   const text = String(ref || "").trim();
   const index = text.lastIndexOf("/");
   if (index <= 0 || index === text.length - 1) {
-    throw new Error("Panel ref must be DASH/PANEL, for example fusion-alerts/12");
+    throw new Error("Panel ref must be DASH/PANEL, for example example-dashboard/12");
   }
   const dashboard = text.slice(0, index).trim();
   const panelToken = text.slice(index + 1).trim();

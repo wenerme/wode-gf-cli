@@ -103,6 +103,7 @@ export function buildSyncCommands(app: CommandAppContext) {
       "comma-separated resources: dashboards,datasources,folders,alert-rules,contact-points,policies",
     )
     .option("--dashboard-api <mode>", "dashboard export API: classic|v2", "classic")
+    .option("--allow-partial", "continue when a requested resource cannot be fetched")
     .option("--compact", "write compact json")
     .action(async function exportAction(options) {
       const ctx = parseCommonOptions(this as unknown as Command);
@@ -112,7 +113,10 @@ export function buildSyncCommands(app: CommandAppContext) {
       const outDir = path.resolve(options.out);
 
       const client = new GrafanaClient(ctx);
-      const bundle = await fetchResources(client, resources, { dashboardApi });
+      const bundle = await fetchResources(client, resources, {
+        dashboardApi,
+        allowPartial: Boolean(options.allowPartial),
+      });
       bundle.context = ctx.contextName;
 
       bundleToFiles(outDir, bundle, !options.compact);

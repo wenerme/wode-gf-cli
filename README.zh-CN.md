@@ -83,9 +83,8 @@ wode-gf-cli context list       # 别名：wode-gf-cli ctx list
 wode-gf-cli context current    # 别名：wode-gf-cli ctx current
 wode-gf-cli context use local  # 别名：wode-gf-cli ctx use local
 wode-gf-cli context set baseUrl=http://127.0.0.1:3300
-wode-gf-cli context set password=secret --context local
-wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --service-account-token <token>
-wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --username admin --password admin
+printf '%s' "$GRAFANA_SERVICE_ACCOUNT_TOKEN" | wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --service-account-token-stdin
+printf '%s' "$GRAFANA_PASSWORD" | wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --username admin --password-stdin
 wode-gf-cli auth whoami --context local
 ```
 
@@ -139,6 +138,7 @@ context: local
 - 项目配置 context 优先于全局默认 context
 - context 配置优先于环境变量
 - Shell 环境变量优先于 `.env` / `.env.local`
+- 优先使用 `--password-stdin` / `--service-account-token-stdin`；直接传 secret 参数可能暴露在 shell 历史和进程列表中
 - `--name` 仅保留为兼容别名；新配置与新文档统一使用 `context`
 - `~/.wode/wode-gf-cli.yaml` 里若仍有旧键 `profile` / `profiles`，读取时会自动迁移为 `context` / `contexts`
 

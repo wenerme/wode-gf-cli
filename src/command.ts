@@ -7,7 +7,7 @@ function formatRows(rows: Array<[string, string]>): string {
 
 function buildTopHelpText(cliName: string): string {
   return `QUICK START
-${cliName} auth login --context local --url http://127.0.0.1:3300 --service-account-token <token>
+printf '%s' "$GRAFANA_SERVICE_ACCOUNT_TOKEN" | ${cliName} auth login --context local --url http://127.0.0.1:3300 --service-account-token-stdin
 ${cliName} auth whoami --context local
 ${cliName} context list        # alias: ${cliName} ctx list
 ${cliName} --context local list dashboard
@@ -73,7 +73,7 @@ ${formatRows([
 ])}
 
 WORKFLOW
-1. auth/context   ${cliName} auth login --context local --url <url> --service-account-token <token> (context alias: ctx)
+1. auth/context   ${cliName} auth login --context local --url <url> --service-account-token-stdin (context alias: ctx)
 2. discover       ${cliName} --context local list dashboard
 3. pull/edit      ${cliName} --context local pull local/dashboard.json
 4. review         ${cliName} --context local diff --resource dashboard -i local/dashboard.json --json

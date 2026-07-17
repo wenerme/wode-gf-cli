@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ensureDir } from "../output/files";
 import { CliConfigSchema } from "../schema";
 import { envValue } from "./env";
 
@@ -76,10 +75,10 @@ export function migrateLegacyConfig(content: string): string {
   return content.replace(/^profile:\s*/m, "context: ").replace(/^profiles:\s*$/m, "contexts:");
 }
 
-export function readCliConfig(): CliConfigData {
-  const file = getConfigPath();
+export function readCliConfig(file = getConfigPath()): CliConfigData {
   try {
     const content = fs.readFileSync(file, "utf8");
+    hardenConfigPermissions(file);
     const migrated = migrateLegacyConfig(content);
     const parsed = parseSimpleYamlConfig(migrated);
     const config: CliConfigData = {
@@ -89,7 +88,6 @@ export function readCliConfig(): CliConfigData {
     if (!config.contexts.some((ctx) => ctx.name === config.context)) {
       config.contexts.push({ name: config.context });
     }
-    if (migrated !== content) writeCliConfig(config);
     return config;
   } catch {
     const parsed = CliConfigSchema.parse({ context: "default", contexts: [{ name: "default" }] });
@@ -147,10 +145,38 @@ export function formatContextView(config: CliConfigData, name: string) {
   };
 }
 
-export function writeCliConfig(config: CliConfigData): void {
-  const file = getConfigPath();
-  ensureDir(path.dirname(file));
-  fs.writeFileSync(file, serializeCliConfig(config), "utf8");
+export function writeCliConfig(config: CliConfigData, file = getConfigPath()): void {
+  const directory = path.dirname(file);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  hardenDirectoryPermissions(directory);
+  const temporary = path.join(directory, `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, serializeCliConfig(config), {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    fs.renameSync(temporary, file);
+    hardenConfigPermissions(file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function hardenDirectoryPermissions(directory: string): void {
+  try {
+    fs.chmodSync(directory, 0o700);
+  } catch {
+    // Some platforms do not expose POSIX file modes.
+  }
+}
+
+function hardenConfigPermissions(file: string): void {
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Some platforms do not expose POSIX file modes.
+  }
 }
 
 export function resolveContextName(options: { context?: string; name?: string } = {}): string | undefined {

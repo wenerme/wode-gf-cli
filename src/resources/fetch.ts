@@ -12,7 +12,7 @@ import type { ExportBundle, ResourceName } from "../schema";
 export async function fetchResources(
   client: GrafanaClient,
   resources: ResourceName[],
-  options: { dashboardApi?: DashboardApiMode } = {},
+  options: { dashboardApi?: DashboardApiMode; allowPartial?: boolean } = {},
 ): Promise<ExportBundle> {
   const bundle: ExportBundle = { generatedAt: new Date().toISOString(), url: client.url, resources };
 
@@ -71,7 +71,11 @@ export async function fetchResources(
         );
       }
     } catch (error) {
-      console.warn(`[WARN] skip ${resource}: ${(error as Error).message}`);
+      const message = error instanceof Error ? error.message : String(error);
+      if (!options.allowPartial) {
+        throw new Error(`Failed to fetch ${resource}: ${message}`, { cause: error });
+      }
+      console.warn(`[WARN] skip ${resource}: ${message}`);
     }
   }
   return bundle;

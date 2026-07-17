@@ -83,8 +83,8 @@ wode-gf-cli context list       # alias: wode-gf-cli ctx list
 wode-gf-cli context current    # alias: wode-gf-cli ctx current
 wode-gf-cli context use local  # alias: wode-gf-cli ctx use local
 wode-gf-cli context set baseUrl=http://127.0.0.1:3300
-wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --service-account-token <token>
-wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --username admin --password admin
+printf '%s' "$GRAFANA_SERVICE_ACCOUNT_TOKEN" | wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --service-account-token-stdin
+printf '%s' "$GRAFANA_PASSWORD" | wode-gf-cli auth login --context local --url http://127.0.0.1:3300 --username admin --password-stdin
 wode-gf-cli auth whoami --context local
 ```
 
@@ -138,6 +138,7 @@ Priority notes:
 - project config context overrides the global default context
 - context config overrides env values
 - Shell env has higher priority than `.env` / `.env.local`
+- prefer `--password-stdin` / `--service-account-token-stdin`; direct secret flags can be exposed in shell history and process listings
 - `--name` remains only as a compatibility alias; new docs use `context`
 - legacy config keys `profile` / `profiles` in `~/.wode/wode-gf-cli.yaml` are migrated to `context` / `contexts` automatically when read.
 

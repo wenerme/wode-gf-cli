@@ -54,7 +54,7 @@ export type CliRuntime = {
   fetchResources: (
     client: GrafanaClient,
     resources: ResourceName[],
-    options?: { dashboardApi?: "classic" | "v2" },
+    options?: { dashboardApi?: "classic" | "v2"; allowPartial?: boolean },
   ) => Promise<ExportBundle>;
   bundleToFiles: (outDir: string, bundle: ExportBundle, pretty: boolean) => void;
   importResources: (

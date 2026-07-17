@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { GrafanaClient } from "../client";
 import { parseCommonOptions } from "../config/context";
+import { readSecretFromStdin } from "../config/secret-input";
 import {
   contextAuthType,
   formatContextView,
@@ -110,7 +111,9 @@ export function buildContextAuthCommands(): Command[] {
     .option("--url <url>", "Grafana URL")
     .option("--username <username>", "Grafana username")
     .option("--password <password>", "Grafana password")
+    .option("--password-stdin", "read Grafana password from stdin")
     .option("--service-account-token <token>", "Grafana service account token")
+    .option("--service-account-token-stdin", "read Grafana service account token from stdin")
     .action(function authLoginAction(options) {
       const config = readCliConfig();
       const mergedOptions = this.optsWithGlobals() as {
@@ -118,8 +121,19 @@ export function buildContextAuthCommands(): Command[] {
         url?: string;
         username?: string;
         password?: string;
+        passwordStdin?: boolean;
         serviceAccountToken?: string;
+        serviceAccountTokenStdin?: boolean;
       };
+      if (options.passwordStdin && options.serviceAccountTokenStdin) {
+        throw new Error("Only one secret can be read from stdin per login command");
+      }
+      if (options.passwordStdin && options.password !== undefined) {
+        throw new Error("Use either --password or --password-stdin, not both");
+      }
+      if (options.serviceAccountTokenStdin && options.serviceAccountToken !== undefined) {
+        throw new Error("Use either --service-account-token or --service-account-token-stdin, not both");
+      }
       const requestedName = String(
         options.context || mergedOptions.context || config.context || "default",
       ).trim();
@@ -131,8 +145,12 @@ export function buildContextAuthCommands(): Command[] {
       }
       const url = options.url ?? mergedOptions.url;
       const username = options.username ?? mergedOptions.username;
-      const password = options.password ?? mergedOptions.password;
-      const token = options.serviceAccountToken ?? mergedOptions.serviceAccountToken;
+      const password = options.passwordStdin
+        ? readSecretFromStdin("--password-stdin")
+        : (options.password ?? mergedOptions.password);
+      const token = options.serviceAccountTokenStdin
+        ? readSecretFromStdin("--service-account-token-stdin")
+        : (options.serviceAccountToken ?? mergedOptions.serviceAccountToken);
       if (url) context.baseUrl = String(url).trim();
       if (username) context.username = String(username).trim();
       if (password !== undefined) context.password = String(password);
