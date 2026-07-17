@@ -89,10 +89,18 @@ export function readCliConfig(file = getConfigPath()): CliConfigData {
       config.contexts.push({ name: config.context });
     }
     return config;
-  } catch {
+  } catch (error) {
+    if (!isNodeErrorWithCode(error, "ENOENT")) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to read CLI config ${file}: ${message}`, { cause: error });
+    }
     const parsed = CliConfigSchema.parse({ context: "default", contexts: [{ name: "default" }] });
     return { context: parsed.context, contexts: parsed.contexts.map((context) => ({ ...context })) };
   }
+}
+
+function isNodeErrorWithCode(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 export function readProjectCliConfig(startDir = process.cwd()): { path?: string; context?: string } {

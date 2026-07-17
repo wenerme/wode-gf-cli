@@ -46,6 +46,7 @@ export const ExportBundleSchema = z.object({
   context: z.string().optional(),
   url: z.string(),
   resources: z.array(ResourceNameSchema),
+  failedResources: z.array(ResourceNameSchema).optional(),
   folders: z.array(z.unknown()).optional(),
   dashboards: z.array(z.unknown()).optional(),
   datasources: z.array(z.unknown()).optional(),

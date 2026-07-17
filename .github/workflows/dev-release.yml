@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: dev-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build Dev Release
@@ -38,8 +42,8 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm run build
+      - name: Validate And Build
+        run: pnpm run check
 
       - name: Prepare Release Files
         run: |

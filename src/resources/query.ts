@@ -1,8 +1,8 @@
 import type { GrafanaClient } from "../client";
+import type { JsonObject } from "../core/json";
 import { asObjectArray, asString, getObjectField } from "../lib/json-narrow";
 import { resolveTemplateString, type TemplateVars } from "../lib/template-vars";
-import { parseResourceAlias } from "../resources/model";
-import type { JsonObject } from "./json";
+import { parseResourceAlias } from "./model";
 
 export type QueryModeFlags = {
   resourceAlias: ReturnType<typeof parseResourceAlias>;

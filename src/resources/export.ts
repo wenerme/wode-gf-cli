@@ -45,6 +45,20 @@ export function bundleToFiles(outDir: string, bundle: ExportBundle, pretty: bool
   ])
     fs.rmSync(path.join(outDir, file), { force: true });
 
+  const directoriesByResource: Record<(typeof bundle.resources)[number], string[]> = {
+    folders: ["folder"],
+    dashboards: ["dashboard", "dashboard-v2"],
+    datasources: ["connection"],
+    "alert-rules": ["alert-rule"],
+    "contact-points": ["contact-point"],
+    policies: ["policy"],
+  };
+  for (const resource of bundle.resources) {
+    for (const directory of directoriesByResource[resource]) {
+      fs.rmSync(path.join(outDir, directory), { recursive: true, force: true });
+    }
+  }
+
   writeJson(
     path.join(outDir, "grafana.manifest.json"),
     {
@@ -54,6 +68,7 @@ export function bundleToFiles(outDir: string, bundle: ExportBundle, pretty: bool
       context: bundle.context,
       url: bundle.url,
       resources: bundle.resources,
+      failedResources: bundle.failedResources || [],
       counts: {
         folders: Array.isArray(bundle.folders) ? bundle.folders.length : 0,
         dashboards: Array.isArray(bundle.dashboards) ? bundle.dashboards.length : 0,

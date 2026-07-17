@@ -34,11 +34,6 @@ import {
   valueEqual,
 } from "./core/json-values";
 import {
-  detectQueryMode,
-  resolveDatasourceByIdentifier,
-  resolveQueryDatasourceIdentifier,
-} from "./core/query";
-import {
   assertDashboardResourceV2Transformations,
   dashboardResourceV2HasTabs,
   dashboardResourceV2Name,
@@ -89,6 +84,11 @@ import {
   selectResource,
   setSingleResource,
 } from "./resources/model";
+import {
+  detectQueryMode,
+  resolveDatasourceByIdentifier,
+  resolveQueryDatasourceIdentifier,
+} from "./resources/query";
 import { collectBundle } from "./resources/source";
 import { CliName } from "./schema";
 import {
