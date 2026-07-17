@@ -25,6 +25,15 @@ type ApiBody = {
 };
 
 const NoBodyMethods = new Set(["GET", "HEAD"]);
+const SensitiveResponseHeaders = new Set([
+  "authorization",
+  "cookie",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "set-cookie",
+  "www-authenticate",
+  "x-api-key",
+]);
 
 export function buildApiCommand(app: CommandAppContext) {
   const { collectList, runtime } = app;
@@ -213,7 +222,7 @@ function readFileReference(file: string): string {
 function headersToObject(headers: Headers): Record<string, string> {
   const output: Record<string, string> = {};
   headers.forEach((value, name) => {
-    output[name] = value;
+    output[name] = SensitiveResponseHeaders.has(name.toLowerCase()) ? "<redacted>" : value;
   });
   return output;
 }
@@ -245,4 +254,5 @@ export const __test__ = {
   normalizeApiPath,
   parseHeader,
   parseQueryParams,
+  headersToObject,
 };

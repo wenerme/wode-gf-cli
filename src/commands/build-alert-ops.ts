@@ -93,7 +93,7 @@ export function attachAlertRuleOps(scoped: Command, app: CommandAppContext) {
     .command("check-closure <TARGET>")
     .description("Check alert operational asset closure")
     .option("--dashboard-dir <dir>", "local dashboard directory", "grafana/dashboard")
-    .option("--docs-dir <dir>", "local alert docs directory", "docs/fusion/alters")
+    .option("--docs-dir <dir>", "local alert docs directory", "docs/alerts")
     .option("--json", "print closure result as json")
     .action(async function alertRuleClosureAction(target: string, options) {
       const ctx = runtime.parseCommonOptions(this as unknown as Command, {
@@ -104,7 +104,7 @@ export function attachAlertRuleOps(scoped: Command, app: CommandAppContext) {
       if (!rule) throw new Error("No alert rule found");
       const checks = await checkAlertClosure(ctx, rule, runtime, {
         dashboardDir: String(options.dashboardDir || "grafana/dashboard"),
-        docsDir: String(options.docsDir || "docs/fusion/alters"),
+        docsDir: String(options.docsDir || "docs/alerts"),
       });
       if (options.json || ctx.output === "json") {
         console.log(JSON.stringify({ rule: alertRuleTitle(rule), checks }, null, 2));

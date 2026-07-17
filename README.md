@@ -171,7 +171,7 @@ wode-gf-cli --context local export -o local/grafana-export
 wode-gf-cli --context local export -r dashboards --dashboard-api v2 -o local/grafana-export-v2
 
 # pull defaults to --dashboard-api auto; tabs dashboards are pulled as v2 automatically
-wode-gf-cli --context local pull local/fusion.json -t dashboard --uid fusion
+wode-gf-cli --context local pull local/example-dashboard.json -t dashboard --uid example-dashboard
 
 # edit local JSON
 wode-gf-cli --context local query dashboard --uid <uid> --json > local/dashboard.json
@@ -184,7 +184,7 @@ wode-gf-cli --context local --dry-run import local/grafana-export
 wode-gf-cli --context local import local/grafana-export
 
 # v2 dashboard files under dashboard-v2/ or apiVersion=dashboard.grafana.app/v2beta1 use the v2 API on import
-wode-gf-cli --context local import local/grafana-export-v2/dashboard-v2/fusion.json
+wode-gf-cli --context local import local/grafana-export-v2/dashboard-v2/example-dashboard.json
 
 # diff local v2 dashboard source files against remote v2 resources without treating remote-only dashboards as removed
 wode-gf-cli --context local diff -i local/grafana-export-v2/dashboard-v2 --resources dashboards --local-only
