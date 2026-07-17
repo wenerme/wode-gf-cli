@@ -196,6 +196,9 @@ wode-gf-cli --context local validate ./grafana --concurrency 2 --timeout 60000
 wode-gf-cli --context local validate ./grafana --interval-ms 60000
 wode-gf-cli --context local validate ./grafana --syntax-only --promql-macro-mode keep
 
+# 隔离校验远端 panel 的单个 query
+wode-gf-cli --context local panel validate <dashboard-uid>/<panel-id> --ref-id A
+
 # 快速数据源查询（uid 或 name）
 wode-gf-cli --context local query xyz-mysql --sql 'select 1'
 wode-gf-cli --context local query my-prom --expr 'up'

@@ -140,7 +140,45 @@ function sanitizeStringMap(input: unknown, omitted: Set<string>): JsonObject | u
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+function assertDashboardResourceV2Transformations(input: JsonObject): void {
+  if (asString(input.apiVersion) !== "dashboard.grafana.app/v2beta1") return;
+  const elements = getObjectField(getObjectField(input, "spec"), "elements") || {};
+  for (const [elementName, elementValue] of Object.entries(elements)) {
+    const element = asObject(elementValue);
+    if (asString(element?.kind) !== "Panel") continue;
+    const panelSpec = getObjectField(element, "spec");
+    const queryGroup = getObjectField(getObjectField(panelSpec, "data"), "spec");
+    const transformations = queryGroup?.transformations;
+    if (transformations === undefined) continue;
+    if (!Array.isArray(transformations)) {
+      throw new Error(`Dashboard v2beta1 panel "${elementName}" transformations must be an array`);
+    }
+    for (const [index, transformationValue] of transformations.entries()) {
+      const transformation = asObject(transformationValue);
+      if (!transformation) {
+        throw new Error(
+          `Dashboard v2beta1 panel "${elementName}" transformation[${index}] must be an object`,
+        );
+      }
+      const kind = asString(transformation.kind);
+      const spec = getObjectField(transformation, "spec");
+      const id = asString(spec?.id);
+      if (!kind || !id || kind !== id) {
+        throw new Error(
+          `Dashboard v2beta1 panel "${elementName}" transformation[${index}] must use the same non-empty transformation ID in kind and spec.id; stable v2 kind="Transformation"/group is not valid for v2beta1`,
+        );
+      }
+      if (!asObject(spec?.options)) {
+        throw new Error(
+          `Dashboard v2beta1 panel "${elementName}" transformation[${index}] spec.options must be an object`,
+        );
+      }
+    }
+  }
+}
+
 function sanitizeDashboardResourceV2(input: JsonObject): JsonObject {
+  assertDashboardResourceV2Transformations(input);
   const clean = asObject(stripMeta(input));
   if (!clean) throw new Error("Dashboard v2 resource must be a JSON object");
   const metadata = getObjectField(clean, "metadata") || {};
@@ -1071,6 +1109,25 @@ function diffArray(
   return diff;
 }
 
+function selectedResourceChanged(
+  resource: ResourceName,
+  localItem: unknown,
+  remoteItem: unknown,
+  pathExpr?: string,
+): boolean {
+  if (localItem === undefined || remoteItem === undefined) return localItem !== remoteItem;
+  if (pathExpr) {
+    return !valueEqual(getPathValue(localItem, pathExpr), getPathValue(remoteItem, pathExpr));
+  }
+  return (
+    diffArray(
+      resource,
+      localItem === undefined ? [] : [localItem],
+      remoteItem === undefined ? [] : [remoteItem],
+    ).length > 0
+  );
+}
+
 function parseJsonLike(value: string): unknown {
   const text = value.trim();
   if (!text.length) return "";
@@ -1814,6 +1871,7 @@ async function validateDashboards(
     syntaxOnly?: boolean;
     skipPanelIds: number[];
     onlyPanelIds?: number[];
+    onlyRefIds?: string[];
     vars: Record<string, string>;
     promqlMacroMode?: GrafanaPromQLMacroMode;
   },
@@ -1823,6 +1881,7 @@ async function validateDashboards(
   const client = new GrafanaClient({ ...ctx, timeoutMs: options.timeoutMs });
   const skipSet = new Set(options.skipPanelIds);
   const onlySet = new Set(options.onlyPanelIds || []);
+  const onlyRefSet = new Set(options.onlyRefIds || []);
   const onlyDatasourceTypes = new Set(options.datasourceTypes || []);
   const skipDatasourceTypes = new Set(options.skipTypes || []);
   const nowMs = Date.now();
@@ -1839,6 +1898,22 @@ async function validateDashboards(
   }
 
   for (const dashboardEntry of dashboards) {
+    if (isDashboardResourceV2(dashboardEntry)) {
+      try {
+        assertDashboardResourceV2Transformations(dashboardEntry);
+      } catch (error) {
+        errors.push({
+          sourceFile: sourceFileOf(dashboardEntry),
+          dashboardTitle: dashboardResourceV2Title(dashboardEntry) || "(untitled dashboard)",
+          panelTitle: "(dashboard v2 schema)",
+          panelId: 0,
+          refId: "-",
+          kind: "query-error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+    }
     const normalized = normalizeDashboardInput(dashboardEntry);
     if (!normalized) {
       errors.push({
@@ -1869,8 +1944,7 @@ async function validateDashboards(
 
     await mapLimit(tasks, options.concurrency, async ({ panel, target }) => {
       const panelId = Number.parseInt(String(panel.id || "0"), 10) || 0;
-      if (onlySet.size > 0 && !onlySet.has(panelId)) return;
-      if (skipSet.has(panelId)) return;
+      if (!matchesValidationTarget(panelId, target.refId, onlySet, skipSet, onlyRefSet)) return;
 
       const panelDatasource = getObjectField(panel, "datasource");
       const targetDatasource = getObjectField(target.raw, "datasource");
@@ -2027,6 +2101,19 @@ async function validateDashboards(
   }
 
   return { errors, warnings };
+}
+
+function matchesValidationTarget(
+  panelId: number,
+  refId: string,
+  onlyPanelIds: ReadonlySet<number>,
+  skipPanelIds: ReadonlySet<number>,
+  onlyRefIds: ReadonlySet<string>,
+): boolean {
+  if (onlyPanelIds.size > 0 && !onlyPanelIds.has(panelId)) return false;
+  if (skipPanelIds.has(panelId)) return false;
+  if (onlyRefIds.size > 0 && !onlyRefIds.has(refId)) return false;
+  return true;
 }
 
 type OutputFormat = "text" | "json";
@@ -2494,6 +2581,7 @@ export async function run() {
     valueEqual,
     hashObject,
     diffArray,
+    selectedResourceChanged,
     printMessage,
     printData,
     rowsToTable,
@@ -2706,6 +2794,7 @@ export const __test__ = {
   inferResourceFromObject,
   isDashboardResourceV2,
   sanitizeDashboardResourceV2,
+  assertDashboardResourceV2Transformations,
   dashboardResourceV2Name,
   dashboardResourceV2Title,
   dashboardResourceV2HasTabs,
@@ -2736,6 +2825,8 @@ export const __test__ = {
   deepMerge,
   validateDashboardPromQLSyntax,
   buildValidateQueryBody,
+  matchesValidationTarget,
   diffArray,
+  selectedResourceChanged,
   writeJson,
 };

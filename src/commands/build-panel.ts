@@ -31,6 +31,24 @@ type PanelMatch = {
   depth: number;
 };
 
+export function normalizeRefIds(input: unknown): string[] {
+  const values = Array.isArray(input) ? input : [input];
+  return Array.from(
+    new Set(
+      values.map((value) => asString(value)?.trim()).filter((value): value is string => Boolean(value)),
+    ),
+  );
+}
+
+export function targetHasValidationQuery(target: unknown): boolean {
+  const obj = asObject(target);
+  if (!obj) return false;
+  const logServiceParams = getObjectField(obj, "logServiceParams");
+  return Boolean(
+    asString(obj.rawSql) || asString(obj.rawQuery) || asString(obj.expr) || asString(logServiceParams?.Query),
+  );
+}
+
 export function parsePanelRef(ref: string): PanelRef {
   const text = String(ref || "").trim();
   const index = text.lastIndexOf("/");
@@ -502,6 +520,7 @@ export function buildPanelCommand(app: CommandAppContext) {
     .option("--to <time>", "query time end", "now")
     .option("--timeout <ms>", "request timeout milliseconds for validate", "60000")
     .option("--interval-ms <ms>", "grafana built-in interval in milliseconds", "60000")
+    .option("--ref-id <id>", "only validate query refId, repeatable", collectList, [])
     .option("--fail-fast", "stop when first validation error found")
     .option("--promql-macro-mode <mode>", "PromQL Grafana macro handling: keep|preset|eval|strict", "keep")
     .option("--var <expr>", "variable override key=value, repeatable", collectList, [])
@@ -509,7 +528,27 @@ export function buildPanelCommand(app: CommandAppContext) {
       const ctx = runtime.parseCommonOptions(this as unknown as Command);
       const parsed = parsePanelRef(ref);
       const selection = await loadDashboardSelection(ctx, parsed.dashboard, runtime);
-      findPanel(selection.dashboard, parsed.panelId);
+      const panel = findPanel(selection.dashboard, parsed.panelId).panel;
+      const onlyRefIds = normalizeRefIds(options.refId);
+      if (onlyRefIds.length > 0) {
+        const targets = asObjectArray(panel.targets).map((target, index) => ({
+          refId: asString(target.refId) || String.fromCharCode(65 + index),
+          target,
+        }));
+        const availableRefIds = targets.map((target) => target.refId);
+        const missing = onlyRefIds.filter((refId) => !availableRefIds.includes(refId));
+        if (missing.length > 0) {
+          throw new Error(
+            `Panel ${ref} does not contain refId(s): ${missing.join(", ")}. Available: ${availableRefIds.join(", ") || "(none)"}`,
+          );
+        }
+        const unsupported = targets
+          .filter((target) => onlyRefIds.includes(target.refId) && !targetHasValidationQuery(target.target))
+          .map((target) => target.refId);
+        if (unsupported.length > 0) {
+          throw new Error(`Panel ${ref} refId(s) have no supported query body: ${unsupported.join(", ")}`);
+        }
+      }
       const varOverrides = Object.fromEntries(
         (options.var || []).map((expr: string) => {
           const index = expr.indexOf("=");
@@ -537,6 +576,7 @@ export function buildPanelCommand(app: CommandAppContext) {
           promqlMacroMode: parseGrafanaPromQLMacroMode(options.promqlMacroMode),
           skipPanelIds: [],
           onlyPanelIds: [parsed.panelId],
+          onlyRefIds,
           vars: varOverrides,
         },
       );

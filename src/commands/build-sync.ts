@@ -37,9 +37,9 @@ export function buildSyncCommands(app: CommandAppContext) {
     resourceItems,
     selectResource,
     getPathValue,
-    valueEqual,
     hashObject,
     diffArray,
+    selectedResourceChanged,
     printMessage,
     printData,
     validateDashboardPromQLSyntax,
@@ -394,7 +394,7 @@ export function buildSyncCommands(app: CommandAppContext) {
         const remoteItem = selectResource(resourceItems(remoteBundle, resource), resource, selector, true);
         const localValue = getPathValue(localItem, options.path);
         const remoteValue = getPathValue(remoteItem, options.path);
-        const changed = !valueEqual(localValue, remoteValue);
+        const changed = selectedResourceChanged(resource, localItem, remoteItem, options.path);
 
         if (options.json) {
           console.log(

@@ -79,6 +79,12 @@ export type CliRuntime = {
     remote: unknown[],
     options?: { localOnly?: boolean },
   ) => DiffItem[];
+  selectedResourceChanged: (
+    resource: ResourceName,
+    localItem: unknown,
+    remoteItem: unknown,
+    pathExpr?: string,
+  ) => boolean;
   printMessage: (ctx: CliContext, message: string) => void;
   printData: (ctx: CliContext, type: string, data: Record<string, unknown>) => void;
   rowsToTable: (rows: Array<{ uid: string; label: string; folder?: string; raw: JsonObject }>) => string;
@@ -117,6 +123,7 @@ export type CliRuntime = {
       syntaxOnly?: boolean;
       skipPanelIds: number[];
       onlyPanelIds?: number[];
+      onlyRefIds?: string[];
       datasourceTypes?: string[];
       skipTypes?: string[];
       vars: Record<string, string>;

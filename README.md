@@ -195,6 +195,9 @@ wode-gf-cli --context local validate ./grafana --concurrency 2 --timeout 60000
 wode-gf-cli --context local validate ./grafana --interval-ms 60000
 wode-gf-cli --context local validate ./grafana --syntax-only --promql-macro-mode keep
 
+# isolate one query in a remote panel
+wode-gf-cli --context local panel validate <dashboard-uid>/<panel-id> --ref-id A
+
 # quick datasource queries (uid or name)
 wode-gf-cli --context local query xyz-mysql --sql 'select 1'
 wode-gf-cli --context local query my-prom --expr 'up'
