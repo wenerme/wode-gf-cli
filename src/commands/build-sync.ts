@@ -10,15 +10,7 @@ import {
   ResourceSelectorSchema,
 } from "../schema";
 import type { CommandAppContext, DiffItem } from "./runtime";
-
-const SyncResourceOrder = [
-  "folders",
-  "dashboards",
-  "datasources",
-  "alert-rules",
-  "contact-points",
-  "policies",
-] as const satisfies readonly ResourceName[];
+import { fetchDashboardV2LocalSubset, parseDashboardApiMode, syncBundleResources } from "./sync/support";
 
 export function buildSyncCommands(app: CommandAppContext) {
   const { collectList, runtime } = app;
@@ -48,51 +40,7 @@ export function buildSyncCommands(app: CommandAppContext) {
   } = runtime;
 
   const bundleResources = (bundle: ExportBundle): ResourceName[] => {
-    return SyncResourceOrder.filter((resource) => resourceItems(bundle, resource).length > 0);
-  };
-
-  const parseDashboardApiMode = (value: unknown, fallback: "classic" | "auto") => {
-    const mode = String(value || fallback)
-      .trim()
-      .toLowerCase();
-    if (mode === "classic" || mode === "v2" || mode === "auto") return mode;
-    throw new Error(`Unsupported --dashboard-api: ${String(value)}`);
-  };
-
-  const dashboardV2NameFromItem = (item: unknown): string | undefined => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
-    const obj = item as Record<string, unknown>;
-    const metadata =
-      obj.metadata && typeof obj.metadata === "object"
-        ? (obj.metadata as Record<string, unknown>)
-        : undefined;
-    const spec = obj.spec && typeof obj.spec === "object" ? (obj.spec as Record<string, unknown>) : undefined;
-    const value = metadata?.name || spec?.uid || obj.uid;
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
-  };
-
-  const fetchDashboardV2LocalSubset = async (
-    client: GrafanaClient,
-    localItems: unknown[],
-  ): Promise<ExportBundle> => {
-    const bundle = createEmptyBundle();
-    bundle.resources = ["dashboards"];
-    bundle.dashboards = [];
-    for (const item of localItems) {
-      const name = dashboardV2NameFromItem(item);
-      if (!name) continue;
-      const path = `/apis/dashboard.grafana.app/v2beta1/namespaces/default/dashboards/${encodeURIComponent(name)}`;
-      const response = await client.requestWithStatus<unknown>("GET", path);
-      if (response.status === 404) continue;
-      if (response.status < 200 || response.status >= 300) {
-        const message = typeof response.data === "string" ? response.data : JSON.stringify(response.data);
-        throw new Error(`${response.status} GET ${path}: ${message}`);
-      }
-      if (response.data && typeof response.data === "object" && !Array.isArray(response.data)) {
-        bundle.dashboards.push({ ...(response.data as Record<string, unknown>), __type: "dashboard-v2" });
-      }
-    }
-    return bundle;
+    return syncBundleResources(bundle, resourceItems);
   };
 
   const exportCommand = new Command("export")
@@ -392,7 +340,7 @@ export function buildSyncCommands(app: CommandAppContext) {
         const localItem = selectResource(localItems, resource, selector, true);
         const remoteBundle =
           resource === "dashboards" && dashboardApi === "v2" && localItem
-            ? await fetchDashboardV2LocalSubset(client, [localItem])
+            ? await fetchDashboardV2LocalSubset(client, [localItem], createEmptyBundle)
             : await fetchResources(client, [resource], dashboardApi ? { dashboardApi } : undefined);
 
         const remoteItem = selectResource(resourceItems(remoteBundle, resource), resource, selector, true);
@@ -445,7 +393,7 @@ export function buildSyncCommands(app: CommandAppContext) {
             : createEmptyBundle();
         remote.resources = resources;
         remote.dashboards = (
-          await fetchDashboardV2LocalSubset(client, resourceItems(local, "dashboards"))
+          await fetchDashboardV2LocalSubset(client, resourceItems(local, "dashboards"), createEmptyBundle)
         ).dashboards;
       } else {
         remote = await fetchResources(client, resources, { dashboardApi });

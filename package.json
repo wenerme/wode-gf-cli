@@ -19,9 +19,10 @@
     "format": "biome check --write .",
     "generate:promql": "peggy src/promql/parser.peggy --format es --dts --output src/promql/parser.js --return-types '{\"Start\":\"unknown\"}'",
     "check:promql-generated": "pnpm run generate:promql && git diff --exit-code -- src/promql/parser.js src/promql/parser.d.ts",
+    "check:loc": "node scripts/check-source-loc.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run check:promql-generated && pnpm run build"
+    "check": "pnpm run lint && pnpm run check:loc && pnpm run typecheck && pnpm run test && pnpm run check:promql-generated && pnpm run build"
   },
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {

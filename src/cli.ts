@@ -161,9 +161,13 @@ function composeProgram(program: ReturnType<typeof createCommand>["program"], ap
 
 export async function run(): Promise<void> {
   loadEnv();
+  await buildCliProgram().parseAsync(process.argv);
+}
+
+export function buildCliProgram() {
   const { program, collectList } = createCommand(CliName);
   const app: CommandAppContext = { collectList, runtime };
-  await composeProgram(program, app).parseAsync(process.argv);
+  return composeProgram(program, app);
 }
 
 export const __test__ = {

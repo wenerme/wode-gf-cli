@@ -140,13 +140,13 @@ describe("promql parser", () => {
     const expr = parsePromQL(`
       avg_over_time(
         (avg by (env, rollouts_pod_template_hash) (
-          go_goroutines{app="thirdparty-api-adapter", env=~"${bracedEnvName}", pod=~"$fusion_pod"}
+          go_goroutines{app="example-api-adapter", env=~"${bracedEnvName}", pod=~"$example_pod"}
         ))[30m:$__interval]
       )
       +
       3 * stddev_over_time(
         (avg by (env, rollouts_pod_template_hash) (
-          go_goroutines{app="thirdparty-api-adapter", env=~"${bracedEnvName}", pod=~"$fusion_pod"}
+          go_goroutines{app="example-api-adapter", env=~"${bracedEnvName}", pod=~"$example_pod"}
         ))[30m:$__interval]
       )
     `);
@@ -163,10 +163,10 @@ describe("promql parser", () => {
     ]);
     expect(collectPromQLTemplateRefs(expr).map((ref) => ref.raw)).toEqual([
       bracedEnvName,
-      "$fusion_pod",
+      "$example_pod",
       "$__interval",
       bracedEnvName,
-      "$fusion_pod",
+      "$example_pod",
       "$__interval",
     ]);
   });
@@ -175,14 +175,14 @@ describe("promql parser", () => {
     const expr = parsePromQL(`# baseline RPM
       avg_over_time(
         (
-          sum by (model) (rate(ai_fusion_provider_request_latency_count{env=~"${bracedEnvName}",model=~"$model"}[$__rate_interval])) * 60
+          sum by (model) (rate(example_provider_request_latency_count{env=~"${bracedEnvName}",model=~"$model"}[$__rate_interval])) * 60
         )[15m:$__interval]
       )
       +
       # 3-sigma
       3 * stddev_over_time(
         (
-          sum by (model) (rate(ai_fusion_provider_request_latency_count{env=~"${bracedEnvName}",model=~"$model"}[$__rate_interval])) * 60
+          sum by (model) (rate(example_provider_request_latency_count{env=~"${bracedEnvName}",model=~"$model"}[$__rate_interval])) * 60
         )[15m:$__interval]
       )`);
 
@@ -195,12 +195,12 @@ describe("promql parser", () => {
   it("rejects duplicate label selectors found in dashboards and accepts merged matchers", () => {
     expect(() =>
       parsePromQL(
-        `go_gc_duration_seconds{app="faas-llm-api",env=~"${bracedEnvName}",pod=~"$pod"}{quantile="0.5"}`,
+        `go_gc_duration_seconds{app="example-api",env=~"${bracedEnvName}",pod=~"$pod"}{quantile="0.5"}`,
       ),
     ).toThrow(PromQLParseError);
 
     const expr = parsePromQL(
-      `go_gc_duration_seconds{app="faas-llm-api",env=~"${bracedEnvName}",pod=~"$pod",quantile="0.5"}`,
+      `go_gc_duration_seconds{app="example-api",env=~"${bracedEnvName}",pod=~"$pod",quantile="0.5"}`,
     );
 
     expect(expr.type).toBe("VectorSelector");
