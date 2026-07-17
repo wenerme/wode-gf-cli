@@ -17,9 +17,11 @@
     "install:bin": "pnpm run build && rm -f \"$HOME/bin/wode-gf-cli\" \"$HOME/.local/bin/wode-gf-cli\" && mkdir -p \"$HOME/.local/bin\" && cp dist/wode-gf-cli.js \"$HOME/.local/bin/wode-gf-cli\" && chmod +x \"$HOME/.local/bin/wode-gf-cli\"",
     "lint": "biome check .",
     "format": "biome check --write .",
+    "generate:promql": "peggy src/promql/parser.peggy --format es --dts --output src/promql/parser.js --return-types '{\"Start\":\"unknown\"}'",
+    "check:promql-generated": "pnpm run generate:promql && git diff --exit-code -- src/promql/parser.js src/promql/parser.d.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run check:promql-generated && pnpm run build"
   },
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {
@@ -27,6 +29,7 @@
     "@types/node": "^25.6.2",
     "bun-types": "^1.3.13",
     "commander": "^14.0.3",
+    "peggy": "5.1.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5",
     "zod": "^4.4.3"
