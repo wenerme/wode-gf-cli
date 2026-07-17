@@ -12,7 +12,7 @@ type RequestInput<I, P extends QueryParams> = {
   method?: HttpMethod;
   headers?: HeadersInit;
   body?: I;
-  rawBody?: string | Uint8Array;
+  rawBody?: BodyInit;
   params?: P;
   timeoutMs?: number;
   parseAs?: ResponseMode;

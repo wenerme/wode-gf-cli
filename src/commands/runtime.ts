@@ -48,7 +48,7 @@ export type CliRuntime = {
   parseResources: (value?: string) => ResourceName[];
   parseResourceAlias: (value: string | undefined) => ResourceName | undefined;
   dedupeResources: (resources: ResourceName[]) => ResourceName[];
-  isDashboardResourceV2: (value: unknown) => value is JsonObject;
+  isDashboardResourceV2: (value: unknown) => boolean;
   dashboardResourceV2HasTabs: (value: JsonObject) => boolean;
   collectBundle: (sources: string[], forcedResource?: ResourceName) => ExportBundle;
   fetchResources: (

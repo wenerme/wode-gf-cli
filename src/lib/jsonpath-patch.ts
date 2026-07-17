@@ -12,7 +12,9 @@ export type JsonPathPatchResult = {
 };
 
 function queryMatches(root: unknown, path: string): JsonPathMatch[] {
-  return JSONPath({ path, json: root, resultType: "all" }) as JsonPathMatch[];
+  if (root === undefined) return [];
+  const json = root as string | number | boolean | object | null;
+  return JSONPath({ path, json, resultType: "all" }) as unknown as JsonPathMatch[];
 }
 
 function applyToParent(match: JsonPathMatch, nextValue: unknown) {

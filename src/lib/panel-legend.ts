@@ -27,12 +27,12 @@ export function parsePanelIds(input: string | undefined): number[] {
   });
 }
 
-export function applyLegendPresetToDashboard(
-  dashboard: JsonObject,
+export function applyLegendPresetToDashboard<T extends JsonObject>(
+  dashboard: T,
   panelIds: number[],
   options: LegendPresetOptions,
-): { dashboard: JsonObject; results: LegendPresetResult[] } {
-  const clone = JSON.parse(JSON.stringify(dashboard)) as JsonObject;
+): { dashboard: T; results: LegendPresetResult[] } {
+  const clone = JSON.parse(JSON.stringify(dashboard)) as T;
   const targetIds = new Set(panelIds);
   const results: LegendPresetResult[] = [];
   const panels = flattenPanels(clone.panels);

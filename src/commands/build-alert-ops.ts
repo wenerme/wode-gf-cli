@@ -373,14 +373,20 @@ async function checkAlertClosure(
     checks.push({ status: "WARN", message: `policy route check skipped: ${(error as Error).message}` });
   }
 
-  const dashboardHit = scanJsonFiles(options.dashboardDir, [uid, title, "trigger points"].filter(Boolean));
+  const dashboardHit = scanJsonFiles(
+    options.dashboardDir,
+    [uid, title, "trigger points"].filter((value): value is string => Boolean(value)),
+  );
   checks.push(
     dashboardHit
       ? { status: "OK", message: `dashboard reference found: ${dashboardHit}` }
       : { status: "WARN", message: "no dashboard panel/link mentions alert uid/title or trigger points" },
   );
 
-  const docHit = scanMarkdownFiles(options.docsDir, [uid, title].filter(Boolean));
+  const docHit = scanMarkdownFiles(
+    options.docsDir,
+    [uid, title].filter((value): value is string => Boolean(value)),
+  );
   checks.push(
     docHit
       ? { status: "OK", message: `docs mention alert: ${docHit}` }

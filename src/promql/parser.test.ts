@@ -153,7 +153,10 @@ describe("promql parser", () => {
 
     const subqueries = collectSubqueries(expr);
     expect(subqueries).toHaveLength(2);
-    expect(subqueries.map((subquery) => subquery.range.raw)).toEqual(["30m", "30m"]);
+    expect(subqueries.map((subquery) => ("raw" in subquery.range ? subquery.range.raw : undefined))).toEqual([
+      "30m",
+      "30m",
+    ]);
     expect(subqueries.map((subquery) => subquery.resolution)).toEqual([
       { type: "TemplateRef", raw: "$__interval", name: "__interval", format: undefined, braced: false },
       { type: "TemplateRef", raw: "$__interval", name: "__interval", format: undefined, braced: false },
@@ -183,7 +186,9 @@ describe("promql parser", () => {
         )[15m:$__interval]
       )`);
 
-    expect(collectSubqueries(expr).map((subquery) => subquery.range.raw)).toEqual(["15m", "15m"]);
+    expect(
+      collectSubqueries(expr).map((subquery) => ("raw" in subquery.range ? subquery.range.raw : undefined)),
+    ).toEqual(["15m", "15m"]);
     expect(collectPromQLTemplateRefs(expr).map((ref) => ref.raw)).toContain("$__interval");
   });
 

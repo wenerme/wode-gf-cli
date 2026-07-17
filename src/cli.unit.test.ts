@@ -435,6 +435,16 @@ describe("cli internal unit tests", () => {
   });
 
   it("rejects stable v2 transformation shape in v2beta1 dashboards", () => {
+    const querySpec: { queries: unknown[]; transformations: unknown } = {
+      queries: [],
+      transformations: [
+        {
+          kind: "Transformation",
+          group: "joinByField",
+          spec: { options: { byField: "model_key", mode: "outer" } },
+        },
+      ],
+    };
     const dashboard = {
       apiVersion: "dashboard.grafana.app/v2beta1",
       kind: "Dashboard",
@@ -448,16 +458,7 @@ describe("cli internal unit tests", () => {
               id: 1,
               data: {
                 kind: "QueryGroup",
-                spec: {
-                  queries: [],
-                  transformations: [
-                    {
-                      kind: "Transformation",
-                      group: "joinByField",
-                      spec: { options: { byField: "model_key", mode: "outer" } },
-                    },
-                  ],
-                },
+                spec: querySpec,
               },
             },
           },
@@ -468,22 +469,20 @@ describe("cli internal unit tests", () => {
     expect(() => __test__.sanitizeDashboardResourceV2(dashboard)).toThrow(
       /panel "panel-1" transformation\[0\].*kind and spec\.id/,
     );
-    dashboard.spec.elements["panel-1"].spec.data.spec.transformations = [
+    querySpec.transformations = [
       {
         kind: "joinByField",
         spec: { id: "joinByField", options: { byField: "model_key", mode: "outer" } },
       },
     ];
     expect(() => __test__.sanitizeDashboardResourceV2(dashboard)).not.toThrow();
-    dashboard.spec.elements["panel-1"].spec.data.spec.transformations = {} as never;
+    querySpec.transformations = {};
     expect(() => __test__.sanitizeDashboardResourceV2(dashboard)).toThrow(/transformations must be an array/);
-    dashboard.spec.elements["panel-1"].spec.data.spec.transformations = [null] as never;
+    querySpec.transformations = [null];
     expect(() => __test__.sanitizeDashboardResourceV2(dashboard)).toThrow(
       /transformation\[0\] must be an object/,
     );
-    dashboard.spec.elements["panel-1"].spec.data.spec.transformations = [
-      { kind: "joinByField", spec: { id: "joinByField" } },
-    ] as never;
+    querySpec.transformations = [{ kind: "joinByField", spec: { id: "joinByField" } }];
     expect(() => __test__.sanitizeDashboardResourceV2(dashboard)).toThrow(
       /transformation\[0\] spec\.options must be an object/,
     );
@@ -611,8 +610,8 @@ describe("cli internal unit tests", () => {
       ],
     };
     const updated = replacePanelInDashboard(dashboard, 3, { id: 3, title: "Next" });
-    expect(updated.panels[1].panels[0].title).toBe("Next");
-    expect(dashboard.panels[1].panels[0].title).toBe("Nested");
+    expect(updated.panels[1]?.panels?.[0]?.title).toBe("Next");
+    expect(dashboard.panels[1]?.panels?.[0]?.title).toBe("Nested");
   });
 
   it("deep merges objects and replaces arrays", () => {

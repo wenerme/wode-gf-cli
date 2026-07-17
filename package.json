@@ -17,7 +17,9 @@
     "install:bin": "pnpm run build && rm -f \"$HOME/bin/wode-gf-cli\" \"$HOME/.local/bin/wode-gf-cli\" && mkdir -p \"$HOME/.local/bin\" && cp dist/wode-gf-cli.js \"$HOME/.local/bin/wode-gf-cli\" && chmod +x \"$HOME/.local/bin/wode-gf-cli\"",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "check": "pnpm run lint && pnpm run build"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "packageManager": "pnpm@10.33.0",
   "devDependencies": {

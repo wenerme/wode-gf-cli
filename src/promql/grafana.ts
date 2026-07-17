@@ -264,7 +264,7 @@ function scanLegacyTemplate(
 function shouldCanonicalizeForKeep(token: GrafanaPromQLTemplateToken): boolean {
   return (
     token.kind === "legacy" ||
-    (token.kind === "braced" && (!isSimpleTemplateFormat(token.format) || token.fieldPath))
+    (token.kind === "braced" && (!isSimpleTemplateFormat(token.format) || Boolean(token.fieldPath)))
   );
 }
 

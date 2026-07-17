@@ -81,7 +81,7 @@ function routeEqual(a: JsonObject, b: JsonObject): boolean {
 }
 
 function normalizeRoute(route: JsonObject): JsonObject {
-  const normalized = { ...route, object_matchers: routeMatchers(route) };
+  const normalized: JsonObject = { ...route, object_matchers: routeMatchers(route) };
   delete normalized.matchers;
   return sortObject(normalized) as JsonObject;
 }

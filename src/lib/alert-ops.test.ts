@@ -82,7 +82,8 @@ describe("alert ops helpers", () => {
       calcs: ["mean", "max", "sum"],
     });
     expect(result.results.map((item) => item.status)).toEqual(["updated", "skip"]);
-    expect(result.dashboard.panels[0].options.legend).toEqual({
+    const firstPanel = result.dashboard.panels[0] as { options: { legend?: unknown } };
+    expect(firstPanel.options.legend).toEqual({
       showLegend: true,
       displayMode: "table",
       placement: "right",

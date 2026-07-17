@@ -53,6 +53,7 @@ import {
 } from "./utils";
 
 type JsonObject = Record<string, unknown>;
+type CliConfigData = { context: string; contexts: Array<Record<string, string>> };
 type MutableJson = Record<string, unknown> | unknown[];
 
 function createEmptyBundle(): ExportBundle {
@@ -90,7 +91,7 @@ const DashboardResourceApiBase = "/apis/dashboard.grafana.app/v2beta1/namespaces
 
 type DashboardApiMode = "classic" | "v2";
 
-function isDashboardResourceV2(value: unknown): value is JsonObject {
+function isDashboardResourceV2(value: unknown): boolean {
   const obj = asObject(value);
   if (!obj) return false;
   return (
@@ -340,21 +341,26 @@ function migrateLegacyConfig(content: string): string {
   return content.replace(/^profile:\s*/m, "context: ").replace(/^profiles:\s*$/m, "contexts:");
 }
 
-function readCliConfig() {
+function readCliConfig(): CliConfigData {
   const file = getConfigPath();
   try {
     const content = fs.readFileSync(file, "utf8");
     const migrated = migrateLegacyConfig(content);
     const parsed = parseSimpleYamlConfig(migrated);
-    if (!parsed.contexts.some((ctx) => ctx.name === parsed.context)) {
-      parsed.contexts.push({ name: parsed.context });
+    const config: CliConfigData = {
+      context: parsed.context,
+      contexts: parsed.contexts.map((context) => ({ ...context })),
+    };
+    if (!config.contexts.some((ctx) => ctx.name === config.context)) {
+      config.contexts.push({ name: config.context });
     }
     if (migrated !== content) {
-      writeCliConfig(parsed);
+      writeCliConfig(config);
     }
-    return parsed;
+    return config;
   } catch {
-    return CliConfigSchema.parse({ context: "default", contexts: [{ name: "default" }] });
+    const parsed = CliConfigSchema.parse({ context: "default", contexts: [{ name: "default" }] });
+    return { context: parsed.context, contexts: parsed.contexts.map((context) => ({ ...context })) };
   }
 }
 
@@ -1071,8 +1077,9 @@ function keyFor(resource: ResourceName, item: unknown): string {
 }
 
 function canonicalDiffItem(resource: ResourceName, item: unknown): unknown {
-  if (resource === "dashboards" && isDashboardResourceV2(item)) {
-    return addType(sanitizeDashboardResourceV2(item), "dashboard-v2");
+  const object = asObject(item);
+  if (resource === "dashboards" && object && isDashboardResourceV2(object)) {
+    return addType(sanitizeDashboardResourceV2(object), "dashboard-v2");
   }
   return item;
 }
@@ -1872,6 +1879,8 @@ async function validateDashboards(
     skipPanelIds: number[];
     onlyPanelIds?: number[];
     onlyRefIds?: string[];
+    datasourceTypes?: string[];
+    skipTypes?: string[];
     vars: Record<string, string>;
     promqlMacroMode?: GrafanaPromQLMacroMode;
   },

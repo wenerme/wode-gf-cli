@@ -55,19 +55,14 @@ function buildFolderMap(folders: unknown): Map<string, string> {
 }
 
 function buildFolderNodes(folders: unknown): FolderNode[] {
-  return asObjectArray(folders)
-    .map((folder) => {
-      const uid = asString(folder.uid);
-      const title = asString(folder.title);
-      if (!uid || !title) return undefined;
-      return {
-        uid,
-        title,
-        parentUid: asString(folder.parentUid),
-        raw: folder,
-      } satisfies FolderNode;
-    })
-    .filter((node): node is FolderNode => Boolean(node));
+  const nodes: FolderNode[] = [];
+  for (const folder of asObjectArray(folders)) {
+    const uid = asString(folder.uid);
+    const title = asString(folder.title);
+    if (!uid || !title) continue;
+    nodes.push({ uid, title, parentUid: asString(folder.parentUid), raw: folder });
+  }
+  return nodes;
 }
 
 function renderFolderTree(folders: unknown): string {

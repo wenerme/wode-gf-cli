@@ -107,7 +107,11 @@ function replaceInPanelArray(value: unknown, panelId: number, nextPanel: JsonObj
   return false;
 }
 
-export function replacePanelInDashboard(dashboard: JsonObject, panelId: number, nextPanel: JsonObject) {
+export function replacePanelInDashboard<T extends JsonObject>(
+  dashboard: T,
+  panelId: number,
+  nextPanel: JsonObject,
+): T {
   const updatedDashboard = cloneJson(dashboard);
   if (!replaceInPanelArray(updatedDashboard.panels, panelId, nextPanel)) {
     throw new Error(`No panel ${panelId} found in dashboard`);
@@ -679,7 +683,6 @@ export function buildPanelCommand(app: CommandAppContext) {
       const renderPath = buildRenderPanelPath({
         dashboardUid: selection.uid,
         panelId: parsed.panelId,
-        out,
         from: String(options.from || "now-6h").trim(),
         to: String(options.to || "now").trim(),
         width: parsePositiveInt(options.width, 1600),
