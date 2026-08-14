@@ -43,7 +43,108 @@ describe("cli internal unit tests", () => {
       ],
     });
     expect(vars.env).toBe("sample-env");
-    expect(vars.provider).toBe(".*");
+    expect(vars.provider).toEqual({ value: ".*", isCustomAll: true });
+    const providerSqlStringRef = "$" + "{provider:sqlstring}";
+    const providerDoubleQuoteRef = "$" + "{provider:doublequote}";
+    expect(__test__.resolveTemplateString(providerSqlStringRef, vars)).toBe(".*");
+    expect(__test__.resolveTemplateString(providerDoubleQuoteRef, vars)).toBe(".*");
+  });
+
+  it("识别 classic 和 v2 多选数组形态的 custom All", () => {
+    const vars = __test__.extractTemplatingValues({
+      templating: {
+        list: [
+          {
+            name: "classic_provider",
+            type: "query",
+            current: { value: ["$__all"] },
+            allValue: ".*",
+          },
+        ],
+      },
+      variables: [
+        {
+          kind: "QueryVariable",
+          spec: {
+            name: "v2_provider",
+            current: { value: ["$__all"] },
+            allValue: ".+",
+          },
+        },
+      ],
+    });
+    expect(vars.classic_provider).toEqual({ value: ".*", isCustomAll: true });
+    expect(vars.v2_provider).toEqual({ value: ".+", isCustomAll: true });
+    expect(__test__.resolveTemplateString("$" + "{classic_provider:sqlstring}", vars)).toBe(".*");
+    expect(__test__.resolveTemplateString("$" + "{v2_provider:pipe}", vars)).toBe(".+");
+  });
+
+  it("PromQL eval 预检保留 classic 和 v2 custom All 原样插值", () => {
+    const vars = __test__.extractTemplatingValues({
+      templating: {
+        list: [
+          {
+            name: "classic_provider",
+            type: "query",
+            current: { value: ["$__all"] },
+            allValue: ".*",
+          },
+        ],
+      },
+      variables: [
+        {
+          kind: "QueryVariable",
+          spec: {
+            name: "v2_provider",
+            current: { value: ["$__all"] },
+            allValue: ".+",
+          },
+        },
+      ],
+    });
+    const panel = { id: 1, title: "Provider" };
+    const classicProviderRef = "$" + "{classic_provider:regex}";
+    const v2ProviderRef = "$" + "{v2_provider:regex}";
+    const target = {
+      refId: "A",
+      raw: { expr: `up{classic=~"${classicProviderRef}",v2=~"${v2ProviderRef}"}` },
+    };
+    expect(
+      __test__.validatePanelTargetPromQLSyntax("Dashboard", panel, target, {
+        macroMode: "eval",
+        vars,
+      }),
+    ).toBeUndefined();
+
+    const unsafeVars = __test__.extractTemplatingValues({
+      variables: [
+        {
+          kind: "QueryVariable",
+          spec: {
+            name: "provider",
+            current: { value: ["$__all"] },
+            allValue: 'foo"',
+          },
+        },
+      ],
+    });
+    const providerRef = "$" + "{provider:regex}";
+    expect(
+      __test__.validatePanelTargetPromQLSyntax(
+        "Dashboard",
+        panel,
+        { refId: "A", raw: { expr: `up{provider=~"${providerRef}"}` } },
+        { macroMode: "eval", vars: unsafeVars },
+      ),
+    ).toMatchObject({ kind: "promql-syntax", refId: "A" });
+  });
+
+  it("保留多选变量中的空字符串值", () => {
+    const vars = __test__.extractTemplatingValues({
+      variables: [{ kind: "QueryVariable", spec: { name: "model", current: { value: [""] } } }],
+    });
+    expect(vars.model).toEqual([""]);
+    expect(__test__.resolveTemplateString("$" + "{model:sqlstring}", vars)).toBe("''");
   });
 
   it("supports where/set expressions", () => {
@@ -91,6 +192,7 @@ describe("cli internal unit tests", () => {
     const envCsvRef = "$" + "{env:csv}";
     const envSingleQuoteRef = "$" + "{env:singlequote}";
     const envDoubleQuoteRef = "$" + "{env:doublequote}";
+    const envSqlStringRef = "$" + "{env:sqlstring}";
     const dsRef = "$" + "{ds}";
     const childRef = "$" + "{child}";
     expect(__test__.parseSkipPanelIds("1,2,2,3")).toEqual([1, 2, 3]);
@@ -109,6 +211,9 @@ describe("cli internal unit tests", () => {
     ).toBe("'sample-model-a','sample-model-b'");
     expect(__test__.resolveTemplateString(envSingleQuoteRef, { env: "sample-model-a" })).toBe(
       "'sample-model-a'",
+    );
+    expect(__test__.resolveTemplateString(envSqlStringRef, { env: ["sample-model-a", "model'b"] })).toBe(
+      "'sample-model-a','model''b'",
     );
     expect(
       __test__.resolveTemplateString(envDoubleQuoteRef, { env: ["sample-model-a", "sample-model-b"] }),
@@ -180,10 +285,30 @@ describe("cli internal unit tests", () => {
     expect(__test__.msToInterval(60_000)).toBe("1m");
     expect(__test__.msToInterval(3_600_000)).toBe("1h");
     expect(__test__.msToInterval(86_400_000)).toBe("1d");
-    expect(calcClsInterval(0, 3_600_000)).toBe("1 minute");
-    expect(calcClsInterval(0, 21_600_000)).toBe("5 minute");
-    expect(calcClsInterval(0, 86_400_000)).toBe("10 minute");
-    expect(calcClsInterval(0, 2_592_000_000)).toBe("6 hour");
+    expect(calcClsInterval(0, 3_600_000)).toBe("60 second");
+    expect(calcClsInterval(0, 21_600_000)).toBe("144 second");
+    expect(calcClsInterval(0, 86_400_000)).toBe("576 second");
+    expect(calcClsInterval(0, 2_592_000_000)).toBe("17280 second");
+    expect(
+      __test__.buildValidateQueryBody(
+        {
+          refId: "A",
+          raw: {
+            datasource: { uid: "cls" },
+            maxDataPoints: 12,
+            logServiceParams: {
+              Query:
+                "interval $__cls_interval milliseconds $__cls_interval_ms aliases $__interval $__interval_ms",
+            },
+          },
+        },
+        { datasourceUid: "cls", vars: {}, fromMs: 0, toMs: 3_600_000, intervalMs: 60_000 },
+      ),
+    ).toMatchObject({
+      logServiceParams: {
+        Query: "interval 300 second milliseconds 300000 aliases 300 second 300000",
+      },
+    });
   });
 
   it("finds unresolved template tokens", () => {

@@ -17,7 +17,7 @@ import {
   dashboardResourceV2Title,
   isDashboardResourceV2,
 } from "./model";
-import { collectDashboardPanels, extractPanelTargets, normalizeDashboardInput } from "./normalize";
+import { collectDashboardPanelContexts, extractPanelTargets, normalizeDashboardInput } from "./normalize";
 import { buildValidateQueryBody, matchesValidationTarget, validatePanelTargetPromQLSyntax } from "./promql";
 import type { DashboardTarget, ValidateIssue } from "./types";
 
@@ -100,24 +100,31 @@ export async function validateDashboards(
     const dashboardVars = {
       ...extractTemplatingValues(normalized.dashboard),
       ...buildGrafanaMacros({ from: fromMs, to: toMs, intervalMs: options.intervalMs }),
-      ...options.vars,
     };
 
-    const tasks: Array<{ panel: JsonObject; target: DashboardTarget }> = [];
-    for (const panel of collectDashboardPanels(dashboardEntry)) {
-      for (const target of extractPanelTargets(panel)) tasks.push({ panel, target });
+    const tasks: Array<{
+      panel: JsonObject;
+      target: DashboardTarget;
+      vars: ReturnType<typeof extractTemplatingValues>;
+    }> = [];
+    for (const context of collectDashboardPanelContexts(dashboardEntry)) {
+      const panelVars = extractTemplatingValues({ variables: context.variables });
+      for (const target of extractPanelTargets(context.panel)) {
+        tasks.push({ panel: context.panel, target, vars: panelVars });
+      }
     }
 
-    await mapLimit(tasks, options.concurrency, async ({ panel, target }) => {
+    await mapLimit(tasks, options.concurrency, async ({ panel, target, vars }) => {
       const panelId = Number.parseInt(String(panel.id || "0"), 10) || 0;
       if (!matchesValidationTarget(panelId, target.refId, onlySet, skipSet, onlyRefSet)) return;
+      const scopedVars = { ...dashboardVars, ...vars, ...options.vars };
 
       const panelDatasource = getObjectField(panel, "datasource");
       const targetDatasource = getObjectField(target.raw, "datasource");
       const datasourceUid = resolveDatasourceUid(
         asString(panelDatasource?.uid),
         asString(targetDatasource?.uid),
-        dashboardVars,
+        scopedVars,
       );
       const targetDatasourceType = asString(targetDatasource?.type) || asString(panelDatasource?.type);
       const datasourceType = datasourceUid
@@ -129,7 +136,7 @@ export async function validateDashboards(
       if (isPrometheusDatasourceType(datasourceType)) {
         const syntaxIssue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, {
           macroMode: options.promqlMacroMode,
-          vars: dashboardVars,
+          vars: scopedVars,
           fromMs,
           toMs,
           intervalMs: options.intervalMs,
@@ -177,7 +184,7 @@ export async function validateDashboards(
 
       const queryBody = buildValidateQueryBody(target, {
         datasourceUid,
-        vars: dashboardVars,
+        vars: scopedVars,
         fromMs,
         toMs,
         intervalMs: options.intervalMs,

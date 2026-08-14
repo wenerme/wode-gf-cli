@@ -17,9 +17,16 @@ export type GrafanaPromQLTemplateToken = {
   quote?: "'" | '"';
 };
 
+export type GrafanaPromQLCustomAllValue = {
+  value: string | string[];
+  isCustomAll: true;
+};
+
+export type GrafanaPromQLVariableValue = string | string[] | GrafanaPromQLCustomAllValue;
+
 export type GrafanaPromQLPreflightOptions = {
   macroMode?: GrafanaPromQLMacroMode;
-  vars?: Record<string, string | string[]>;
+  vars?: Record<string, GrafanaPromQLVariableValue>;
   fromMs?: number;
   toMs?: number;
   interval?: string;

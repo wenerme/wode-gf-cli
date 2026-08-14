@@ -42,6 +42,7 @@ import {
   sanitizeDashboardResourceV2,
 } from "./dashboard/model";
 import {
+  collectDashboardPanelContexts,
   collectDashboardPanels,
   collectDashboards,
   extractPanelTargets,
@@ -51,6 +52,7 @@ import {
   buildValidateQueryBody,
   matchesValidationTarget,
   validateDashboardPromQLSyntax,
+  validatePanelTargetPromQLSyntax,
 } from "./dashboard/promql";
 import { validateDashboards } from "./dashboard/validation";
 import {
@@ -190,6 +192,7 @@ export const __test__ = {
   dashboardResourceV2HasTabs,
   normalizeDashboardInput,
   collectDashboardPanels,
+  collectDashboardPanelContexts,
   extractPanelTargets,
   collectDashboards,
   collectBundle,
@@ -214,6 +217,7 @@ export const __test__ = {
   setPathValue,
   deepMerge,
   validateDashboardPromQLSyntax,
+  validatePanelTargetPromQLSyntax,
   buildValidateQueryBody,
   matchesValidationTarget,
   diffArray,

@@ -1,6 +1,6 @@
 import type { JsonObject } from "../core/json";
 import { sourceFileOf } from "../core/source-file";
-import { calcClsInterval } from "../lib/cls-interval";
+import { calcClsIntervalSpec } from "../lib/cls-interval";
 import { asObject, asString, getObjectField } from "../lib/json-narrow";
 import { extractTemplatingValues, resolveTemplateValue, type TemplateVars } from "../lib/template-vars";
 import { PromQLParseError } from "../promql";
@@ -9,7 +9,7 @@ import {
   type GrafanaPromQLMacroMode,
   validateGrafanaPromQLSyntax,
 } from "../promql/grafana";
-import { collectDashboardPanels, extractPanelTargets, normalizeDashboardInput } from "./normalize";
+import { collectDashboardPanelContexts, extractPanelTargets, normalizeDashboardInput } from "./normalize";
 import type { DashboardTarget, ValidateIssue } from "./types";
 
 function promQLSyntaxIssue(
@@ -115,10 +115,15 @@ export function validateDashboardPromQLSyntax(
       });
       continue;
     }
-    const vars = { ...extractTemplatingValues(normalized.dashboard), ...(options.vars || {}) };
-    for (const panel of collectDashboardPanels(dashboardEntry)) {
-      for (const target of extractPanelTargets(panel)) {
-        const issue = validatePanelTargetPromQLSyntax(normalized.title, panel, target, {
+    const rootVars = extractTemplatingValues(normalized.dashboard);
+    for (const context of collectDashboardPanelContexts(dashboardEntry)) {
+      const vars = {
+        ...rootVars,
+        ...extractTemplatingValues({ variables: context.variables }),
+        ...(options.vars || {}),
+      };
+      for (const target of extractPanelTargets(context.panel)) {
+        const issue = validatePanelTargetPromQLSyntax(normalized.title, context.panel, target, {
           macroMode: options.macroMode,
           vars,
           fromMs: options.fromMs,
@@ -152,9 +157,17 @@ export function buildValidateQueryBody(
   if (!rawSql && !expr && !logServiceQuery) return undefined;
 
   const maxDataPoints = Number.parseInt(String(target.raw.maxDataPoints || "1000"), 10) || 1000;
+  const clsInterval = calcClsIntervalSpec(options.fromMs, options.toMs, maxDataPoints);
   const queryVars = {
     ...options.vars,
-    __cls_interval: calcClsInterval(options.fromMs, options.toMs, maxDataPoints),
+    ...(logServiceQuery
+      ? {
+          __interval: clsInterval.sql,
+          __interval_ms: String(clsInterval.milliseconds),
+        }
+      : {}),
+    __cls_interval: clsInterval.sql,
+    __cls_interval_ms: String(clsInterval.milliseconds),
   };
   const targetDatasource = asObject(target.raw.datasource) || {};
   const queryTemplate: JsonObject = logServiceQuery

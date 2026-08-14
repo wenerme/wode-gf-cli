@@ -1,10 +1,23 @@
 import { msToInterval } from "../utils/ms-to-interval";
 import { resolveTimeToMs } from "../utils/resolve-time-to-ms";
-import { calcClsInterval } from "./cls-interval";
+import { calcClsIntervalSpec } from "./cls-interval";
 import { asObjectArray, asString, getObjectField } from "./json-narrow";
 
 type JsonObject = Record<string, unknown>;
-export type TemplateVars = Record<string, string | string[]>;
+export type TemplateVarValue = string | string[];
+export type TemplateVarState = { value: TemplateVarValue; isCustomAll: true };
+export type TemplateVars = Record<string, TemplateVarValue | TemplateVarState>;
+export type PlainTemplateVars = Record<string, TemplateVarValue>;
+
+function isTemplateVarState(value: TemplateVarValue | TemplateVarState): value is TemplateVarState {
+  return typeof value === "object" && !Array.isArray(value) && value.isCustomAll === true;
+}
+
+export function materializeTemplateVars(vars: TemplateVars): PlainTemplateVars {
+  return Object.fromEntries(
+    Object.entries(vars).map(([name, value]) => [name, isTemplateVarState(value) ? value.value : value]),
+  );
+}
 
 export function extractTemplatingValues(dashboard: JsonObject): TemplateVars {
   const values: TemplateVars = {};
@@ -20,44 +33,42 @@ export function extractTemplatingValues(dashboard: JsonObject): TemplateVars {
     const current = getObjectField(source, "current");
     const allValue = asString(source.allValue);
     const currentValue = current ? current.value : undefined;
-    if (typeof currentValue === "string") {
-      if (currentValue === "$__all") {
-        if (allValue) {
-          values[name] = allValue;
-          continue;
-        }
-        const options = asObjectArray(source.options);
-        let optionValues = options
-          .map((option) => option.value)
-          .flatMap((value) => {
-            if (typeof value === "string") return [value];
-            if (typeof value === "number") return [String(value)];
-            if (Array.isArray(value)) return value.map((v) => String(v));
-            return [];
-          })
-          .filter((v) => v && v !== "$__all");
-
-        if (
-          optionValues.length === 0 &&
-          (asString(variable.type) === "custom" || asString(variable.kind) === "CustomVariable")
-        ) {
-          const queryStr = asString(source.query);
-          if (queryStr) {
-            optionValues = queryStr
-              .split(",")
-              .map((v) => v.trim())
-              .filter(Boolean);
-          }
-        }
-
-        if (optionValues.length > 0) {
-          values[name] = optionValues;
-          continue;
-        }
-
-        values[name] = "NULL";
+    const isAll =
+      currentValue === "$__all" ||
+      (Array.isArray(currentValue) && currentValue.length > 0 && currentValue[0] === "$__all");
+    if (isAll) {
+      if (allValue) {
+        values[name] = { value: allValue, isCustomAll: true };
         continue;
       }
+      const options = asObjectArray(source.options);
+      let optionValues = options
+        .map((option) => option.value)
+        .flatMap((value) => {
+          if (typeof value === "string") return [value];
+          if (typeof value === "number") return [String(value)];
+          if (Array.isArray(value)) return value.map((v) => String(v));
+          return [];
+        })
+        .filter((v) => v && v !== "$__all");
+
+      if (
+        optionValues.length === 0 &&
+        (asString(variable.type) === "custom" || asString(variable.kind) === "CustomVariable")
+      ) {
+        const queryStr = asString(source.query);
+        if (queryStr) {
+          optionValues = queryStr
+            .split(",")
+            .map((v) => v.trim())
+            .filter(Boolean);
+        }
+      }
+
+      values[name] = optionValues.length > 0 ? optionValues : "NULL";
+      continue;
+    }
+    if (typeof currentValue === "string") {
       values[name] = currentValue;
       continue;
     }
@@ -66,10 +77,7 @@ export function extractTemplatingValues(dashboard: JsonObject): TemplateVars {
       continue;
     }
     if (Array.isArray(currentValue) && currentValue.length > 0) {
-      values[name] = currentValue
-        .map((item) => String(item))
-        .map((item) => item.trim())
-        .filter(Boolean);
+      values[name] = currentValue.map((item) => String(item)).map((item) => item.trim());
       continue;
     }
     if (allValue) values[name] = allValue;
@@ -77,7 +85,10 @@ export function extractTemplatingValues(dashboard: JsonObject): TemplateVars {
   return values;
 }
 
-function formatTemplateValue(value: string | string[], formatter?: string): string {
+function formatTemplateValue(value: TemplateVarValue | TemplateVarState, formatter?: string): string {
+  if (isTemplateVarState(value)) {
+    return Array.isArray(value.value) ? value.value.join(",") : value.value;
+  }
   const list = Array.isArray(value) ? value : [value];
   const normalized = list.map((item) => String(item));
   const format = String(formatter || "")
@@ -86,7 +97,7 @@ function formatTemplateValue(value: string | string[], formatter?: string): stri
   if (!format) return normalized[0] || "";
   if (format === "pipe") return normalized.join("|");
   if (format === "csv") return normalized.join(",");
-  if (format === "singlequote") {
+  if (format === "singlequote" || format === "sqlstring") {
     return normalized.map((item) => `'${item.replaceAll("'", "''")}'`).join(",");
   }
   if (format === "doublequote") {
@@ -220,6 +231,7 @@ export function buildGrafanaMacros(opts: GrafanaMacroOptions = {}): TemplateVars
   const rangeS = Math.floor(rangeMs / 1000);
   const intervalMs = opts.intervalMs ?? 60_000;
   const maxDataPoints = opts.maxDataPoints ?? 150;
+  const clsInterval = calcClsIntervalSpec(fromMs, toMs, maxDataPoints);
 
   return {
     __from: String(fromMs),
@@ -229,7 +241,8 @@ export function buildGrafanaMacros(opts: GrafanaMacroOptions = {}): TemplateVars
     __timeFilter: `"time" BETWEEN to_timestamp(${fromMs / 1000}) AND to_timestamp(${toMs / 1000})`,
     __interval_ms: String(intervalMs),
     __interval: msToInterval(intervalMs),
-    __cls_interval: calcClsInterval(fromMs, toMs, maxDataPoints),
+    __cls_interval: clsInterval.sql,
+    __cls_interval_ms: String(clsInterval.milliseconds),
     __rate_interval: msToInterval(Math.max(intervalMs * 4, 240_000)),
     __range: `${rangeS}s`,
     __range_ms: String(rangeMs),

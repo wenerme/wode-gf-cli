@@ -109,6 +109,173 @@ describe("cli internal unit tests", () => {
     });
   });
 
+  it("按 Tab 和 Row 作用域绑定重复引用并补入未引用 Panel", () => {
+    const panel = (id: number) => ({
+      kind: "Panel",
+      spec: {
+        id,
+        title: `Panel ${id}`,
+        data: { kind: "QueryGroup", spec: { queries: [], transformations: [], queryOptions: {} } },
+      },
+    });
+    const row = (name: string, value: string, panelName: string) => ({
+      kind: "RowsLayoutRow",
+      spec: {
+        title: name,
+        variables: [
+          { kind: "TextVariable", spec: { name: "detail_user", current: { value }, query: value } },
+        ],
+        layout: {
+          kind: "GridLayout",
+          spec: {
+            items: [
+              {
+                kind: "GridLayoutItem",
+                spec: { element: { kind: "ElementReference", spec: { name: panelName } } },
+              },
+            ],
+          },
+        },
+      },
+    });
+    const dashboard = {
+      apiVersion: "dashboard.grafana.app/v2beta1",
+      kind: "Dashboard",
+      metadata: { name: "row-scope" },
+      spec: {
+        title: "row-scope",
+        elements: { "panel-1": panel(1), "panel-2": panel(2), "panel-3": panel(3) },
+        layout: {
+          kind: "TabsLayout",
+          spec: {
+            tabs: [
+              {
+                kind: "TabsLayoutTab",
+                spec: {
+                  title: "Tab",
+                  variables: [
+                    { kind: "TextVariable", spec: { name: "tab_scope", current: { value: "tab-a" } } },
+                  ],
+                  layout: {
+                    kind: "RowsLayout",
+                    spec: {
+                      rows: [
+                        row("A", "user-a", "panel-1"),
+                        row("B", "user-b", "panel-2"),
+                        row("C", "user-c", "panel-1"),
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    const contexts = __test__.collectDashboardPanelContexts(dashboard);
+    expect(
+      contexts.map(({ panel, variables }) => [panel.id, __test__.extractTemplatingValues({ variables })]),
+    ).toEqual([
+      [1, { tab_scope: "tab-a", detail_user: "user-a" }],
+      [2, { tab_scope: "tab-a", detail_user: "user-b" }],
+      [1, { tab_scope: "tab-a", detail_user: "user-c" }],
+      [3, {}],
+    ]);
+  });
+
+  it("保留 v2 queryOptions maxDataPoints 供 CLS 宏展开", () => {
+    const dashboard = {
+      apiVersion: "dashboard.grafana.app/v2beta1",
+      kind: "Dashboard",
+      metadata: { name: "cls-max-data-points" },
+      spec: {
+        title: "cls-max-data-points",
+        elements: {
+          "panel-1": {
+            kind: "Panel",
+            spec: {
+              id: 1,
+              title: "CLS",
+              data: {
+                kind: "QueryGroup",
+                spec: {
+                  queries: [
+                    {
+                      kind: "PanelQuery",
+                      spec: {
+                        refId: "A",
+                        query: {
+                          kind: "DataQuery",
+                          group: "tencent-cls-grafana-datasource",
+                          datasource: { name: "cls" },
+                          spec: {
+                            logServiceParams: {
+                              Query: "$__cls_interval $__cls_interval_ms $__interval $__interval_ms",
+                            },
+                          },
+                        },
+                      },
+                    },
+                    {
+                      kind: "PanelQuery",
+                      spec: {
+                        refId: "B",
+                        query: {
+                          kind: "DataQuery",
+                          group: "tencent-cls-grafana-datasource",
+                          datasource: { name: "cls" },
+                          spec: {
+                            maxDataPoints: 7,
+                            logServiceParams: {
+                              Query: "$__cls_interval $__cls_interval_ms $__interval $__interval_ms",
+                            },
+                          },
+                        },
+                      },
+                    },
+                  ],
+                  transformations: [],
+                  queryOptions: { maxDataPoints: 12 },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const [target, queryTarget] = __test__.extractPanelTargets(__test__.collectDashboardPanels(dashboard)[0]);
+    expect(target?.raw.maxDataPoints).toBe(12);
+    expect(queryTarget?.raw.maxDataPoints).toBe(7);
+    if (!target || !queryTarget) throw new Error("CLS targets not found");
+    expect(
+      __test__.buildValidateQueryBody(target, {
+        datasourceUid: "cls",
+        vars: {},
+        fromMs: 0,
+        toMs: 3_600_000,
+        intervalMs: 60_000,
+      }),
+    ).toMatchObject({
+      maxDataPoints: 12,
+      logServiceParams: { Query: "300 second 300000 300 second 300000" },
+    });
+    expect(
+      __test__.buildValidateQueryBody(queryTarget, {
+        datasourceUid: "cls",
+        vars: {},
+        fromMs: 0,
+        toMs: 3_600_000,
+        intervalMs: 60_000,
+      }),
+    ).toMatchObject({
+      maxDataPoints: 7,
+      logServiceParams: { Query: "515 second 515000 515 second 515000" },
+    });
+  });
+
   it("rejects stable v2 transformation shape in v2beta1 dashboards", () => {
     const querySpec: { queries: unknown[]; transformations: unknown } = {
       queries: [],

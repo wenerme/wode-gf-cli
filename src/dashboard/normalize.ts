@@ -23,6 +23,7 @@ export function extractPanelTargets(panel: JsonObject): DashboardTarget[] {
   }
 
   const queryGroup = getObjectField(panel.data, "spec");
+  const queryOptions = getObjectField(queryGroup, "queryOptions");
   return asObjectArray(queryGroup?.queries)
     .map((panelQuery, index) => {
       const panelQuerySpec = getObjectField(panelQuery, "spec");
@@ -37,6 +38,7 @@ export function extractPanelTargets(panel: JsonObject): DashboardTarget[] {
         refId:
           asString(panelQuerySpec?.refId) || asString(querySpec.refId) || String.fromCharCode(65 + index),
         datasource: { ...datasource, uid: datasourceUid, type: datasourceType },
+        maxDataPoints: querySpec.maxDataPoints ?? queryOptions?.maxDataPoints,
       } as JsonObject;
       return { refId: asString(raw.refId) || String.fromCharCode(65 + index), raw };
     })
@@ -58,6 +60,11 @@ export type NormalizedDashboardInput = {
   sourceFile?: string;
   title: string;
   uid?: string;
+};
+
+export type DashboardPanelContext = {
+  panel: JsonObject;
+  variables: JsonObject[];
 };
 
 export function normalizeDashboardInput(dashboardEntry: JsonObject): NormalizedDashboardInput | undefined {
@@ -87,17 +94,54 @@ export function normalizeDashboardInput(dashboardEntry: JsonObject): NormalizedD
   };
 }
 
-export function collectDashboardPanels(dashboardEntry: JsonObject): JsonObject[] {
+function collectV2PanelContexts(dashboard: JsonObject): DashboardPanelContext[] {
+  const elements = getObjectField(dashboard, "elements") || {};
+  const contexts: DashboardPanelContext[] = [];
+  const referenced = new Set<string>();
+
+  const visit = (value: unknown, inheritedVariables: JsonObject[]) => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, inheritedVariables);
+      return;
+    }
+    const node = asObject(value);
+    if (!node) return;
+    const spec = getObjectField(node, "spec") || node;
+    const variables = [...inheritedVariables, ...asObjectArray(spec.variables)];
+    if (asString(node.kind) === "ElementReference") {
+      const name = asString(spec.name);
+      const element = name ? asObject(elements[name]) : undefined;
+      if (name && element && asString(element.kind) === "Panel") {
+        referenced.add(name);
+        contexts.push({ panel: { ...(getObjectField(element, "spec") || {}) }, variables });
+      }
+      return;
+    }
+    for (const [key, item] of Object.entries(spec)) {
+      if (key !== "variables") visit(item, variables);
+    }
+  };
+
+  visit(dashboard.layout, []);
+  for (const [name, value] of Object.entries(elements)) {
+    const element = asObject(value);
+    if (!element || referenced.has(name) || asString(element.kind) !== "Panel") continue;
+    contexts.push({ panel: { ...(getObjectField(element, "spec") || {}) }, variables: [] });
+  }
+  return contexts;
+}
+
+export function collectDashboardPanelContexts(dashboardEntry: JsonObject): DashboardPanelContext[] {
   const normalized = normalizeDashboardInput(dashboardEntry);
   if (!normalized) return [];
   if (normalized.format === "v2") {
-    const elements = getObjectField(normalized.dashboard, "elements");
-    return Object.values(elements || {})
-      .map((element) => asObject(element))
-      .filter((element): element is JsonObject => asString(element?.kind) === "Panel")
-      .map((element) => ({ ...(getObjectField(element, "spec") || {}) }));
+    return collectV2PanelContexts(normalized.dashboard);
   }
-  return collectPanels(normalized.dashboard.panels);
+  return collectPanels(normalized.dashboard.panels).map((panel) => ({ panel, variables: [] }));
+}
+
+export function collectDashboardPanels(dashboardEntry: JsonObject): JsonObject[] {
+  return collectDashboardPanelContexts(dashboardEntry).map((context) => context.panel);
 }
 
 export function collectDashboards(bundle: ExportBundle): JsonObject[] {

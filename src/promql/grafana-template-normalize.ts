@@ -1,10 +1,12 @@
 import { scanGrafanaPromQLTemplates } from "./grafana-template-scanner";
 import {
+  type GrafanaPromQLCustomAllValue,
   GrafanaPromQLMacroError,
   type GrafanaPromQLMacroMode,
   type GrafanaPromQLPreflightOptions,
   type GrafanaPromQLPreflightResult,
   type GrafanaPromQLTemplateToken,
+  type GrafanaPromQLVariableValue,
   parseGrafanaPromQLMacroMode,
 } from "./grafana-types";
 
@@ -74,10 +76,11 @@ function replacementForToken(
 function evalReplacement(
   token: GrafanaPromQLTemplateToken,
   options: GrafanaPromQLPreflightOptions,
-): string | string[] | undefined {
+): GrafanaPromQLVariableValue | undefined {
   const vars = options.vars || {};
   const direct = vars[token.raw] ?? vars[token.fullName] ?? vars[token.name];
-  if (direct !== undefined) return formatVariableValue(direct, token.format);
+  if (direct !== undefined)
+    return isCustomAllValue(direct) ? direct : formatVariableValue(direct, token.format);
 
   const intervalMs = options.intervalMs ?? 60_000;
   const rangeMs =
@@ -108,17 +111,24 @@ function evalReplacement(
 }
 
 function formatReplacementForContext(
-  value: string | string[],
+  value: GrafanaPromQLVariableValue,
   token: GrafanaPromQLTemplateToken,
   expression: string,
   options: GrafanaPromQLPreflightOptions,
 ): string {
+  if (isCustomAllValue(value)) {
+    return Array.isArray(value.value) ? value.value.join(",") : value.value;
+  }
   const formatted = Array.isArray(value) ? formatVariableValue(value, token.format) : value;
   if (token.inString) return escapeStringContent(formatted, token.quote || '"');
   if (looksLikeRangeContext(expression, token) && !isPromQLDuration(formatted)) {
     return presetDurationForToken(token, options);
   }
   return formatted;
+}
+
+function isCustomAllValue(value: GrafanaPromQLVariableValue): value is GrafanaPromQLCustomAllValue {
+  return typeof value === "object" && !Array.isArray(value) && value.isCustomAll === true;
 }
 
 function presetReplacement(
