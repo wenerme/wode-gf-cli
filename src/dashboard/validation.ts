@@ -19,6 +19,7 @@ import {
 } from "./model";
 import { collectDashboardPanelContexts, extractPanelTargets, normalizeDashboardInput } from "./normalize";
 import {
+  type DashboardTimeSettings,
   extractDashboardTimeSettings,
   extractDashboardVariableDefinitions,
   resolvePanelTimeRange,
@@ -103,7 +104,21 @@ export async function validateDashboards(
     const dashboardTitle = normalized.title;
     const dashboardTemplateVars = extractTemplatingValues(normalized.dashboard);
     const dashboardVariables = extractDashboardVariableDefinitions(normalized.dashboard);
-    const dashboardTimeSettings = extractDashboardTimeSettings(normalized.dashboard);
+    let dashboardTimeSettings: DashboardTimeSettings;
+    try {
+      dashboardTimeSettings = extractDashboardTimeSettings(normalized.dashboard);
+    } catch (error) {
+      errors.push({
+        sourceFile: normalized.sourceFile,
+        dashboardTitle,
+        panelTitle: "(dashboard time settings)",
+        panelId: 0,
+        refId: "-",
+        kind: "query-error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
 
     const tasks: Array<{
       panel: JsonObject;
