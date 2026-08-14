@@ -166,6 +166,52 @@ describe("Dashboard Panel 时间范围验证", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("拒绝未解析变量或不支持的静态 timeFrom", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00.000Z"));
+    const fetch = vi.fn(async () => jsonResponse({ results: {} }));
+    vi.stubGlobal("fetch", fetch);
+    const unresolved = panelTimeFromDashboard("1h");
+    unresolved.spec.variables = [];
+    const unsupported = panelTimeFromDashboard("1h");
+    unsupported.spec.elements["panel-1"].spec.data.spec.queryOptions.timeFrom = "now+1h";
+
+    const unresolvedResult = await validateDashboards(validationContext(), [unresolved], validationOptions());
+    const unsupportedResult = await validateDashboards(
+      validationContext(),
+      [unsupported],
+      validationOptions(),
+    );
+
+    expect(unresolvedResult.errors[0]?.message).toContain("unresolved template tokens");
+    expect(unsupportedResult.errors[0]?.message).toContain("Unsupported Panel timeFrom expression");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("Dashboard 使用绝对时间时忽略 Panel relative time override", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+        return jsonResponse({
+          results: { A: { frames: [{ schema: { fields: [] }, data: { values: [] } }] } },
+        });
+      }),
+    );
+    const from = Date.parse("2026-08-14T10:00:00.000Z");
+    const to = Date.parse("2026-08-14T11:00:00.000Z");
+
+    const result = await validateDashboards(validationContext(), [panelTimeFromDashboard("6h")], {
+      ...validationOptions(),
+      from: String(from),
+      to: String(to),
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(requests[0]).toMatchObject({ from: String(from), to: String(to) });
+  });
+
   it("按 classic timeFrom 重算请求窗口", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-14T12:00:00.000Z"));
