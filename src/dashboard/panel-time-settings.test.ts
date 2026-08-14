@@ -93,23 +93,25 @@ function captureRequests() {
 }
 
 describe("Dashboard Panel timezone 与 fiscal time", () => {
-  it("按 Dashboard 与 browser timezone 计算日历 rounding", async () => {
+  it("按显式 Dashboard timezone 计算 rounding，并拒绝 browser 继承值", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-14T12:00:00.000Z"));
     const requests = captureRequests();
-    const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const shanghai = await validateDashboards(
+      context(),
+      [dashboard("now/d", { timezone: "Asia/Shanghai", fiscalYearStartMonth: 0, weekStart: "sunday" })],
+      options(),
+    );
+    const browser = await validateDashboards(
+      context(),
+      [dashboard("now/d", { timezone: "browser", fiscalYearStartMonth: 0, weekStart: "sunday" })],
+      options(),
+    );
 
-    for (const timeZone of ["Asia/Shanghai", "browser", browserTimeZone]) {
-      const result = await validateDashboards(
-        context(),
-        [dashboard("now/d", { timezone: timeZone, fiscalYearStartMonth: 0, weekStart: "sunday" })],
-        options(),
-      );
-      expect(result.errors).toEqual([]);
-    }
-
+    expect(shanghai.errors).toEqual([]);
+    expect(browser.errors[0]?.message).toContain("requires explicit dashboard timezone");
     expect(requests[0]?.from).toBe(String(Date.parse("2026-08-13T16:00:00.000Z")));
-    expect(requests[1]?.from).toBe(requests[2]?.from);
+    expect(requests).toHaveLength(1);
   });
 
   it("匹配 Moment 在纽约 fold 与柏林 gap 的源 offset 语义", async () => {
@@ -165,6 +167,26 @@ describe("Dashboard Panel timezone 与 fiscal time", () => {
       String(Date.parse("2026-08-10T00:00:00.000Z")),
       String(Date.parse("2026-08-08T00:00:00.000Z")),
     ]);
+  });
+
+  it("拒绝继承型 weekStart，但固定小时窗口不依赖 timezone authority", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00.000Z"));
+    const requests = captureRequests();
+    const inheritedWeek = await validateDashboards(
+      context(),
+      [dashboard("now/w", { timezone: "utc", fiscalYearStartMonth: 0 })],
+      options(),
+    );
+    const fixedHour = await validateDashboards(
+      context(),
+      [dashboard("6h", { timezone: "browser", fiscalYearStartMonth: 0 })],
+      options(),
+    );
+
+    expect(inheritedWeek.errors[0]?.message).toContain("requires explicit dashboard weekStart");
+    expect(fixedHour.errors).toEqual([]);
+    expect(requests).toHaveLength(1);
   });
 
   it("把非法 timezone/fiscal/weekStart 作为 Dashboard 错误并继续", async () => {

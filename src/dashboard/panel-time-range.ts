@@ -15,22 +15,23 @@ export function extractDashboardVariableDefinitions(dashboard: JsonObject): Json
 }
 
 export type DashboardTimeSettings = {
-  timeZone: string;
+  timeZone?: string;
   fiscalYearStartMonth: number;
-  weekStart: "saturday" | "monday" | "sunday";
+  weekStart?: "saturday" | "monday" | "sunday";
 };
 
 export function extractDashboardTimeSettings(dashboard: JsonObject): DashboardTimeSettings {
   const timeSettings = getObjectField(dashboard, "timeSettings");
-  const configuredTimeZone = asString(timeSettings?.timezone) || asString(dashboard.timezone) || "browser";
-  const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const configuredTimeZone = asString(timeSettings?.timezone) || asString(dashboard.timezone);
   const timeZone =
-    configuredTimeZone === "browser"
-      ? browserTimeZone
-      : configuredTimeZone.toUpperCase() === "UTC"
+    configuredTimeZone && configuredTimeZone !== "browser"
+      ? configuredTimeZone.toUpperCase() === "UTC"
         ? "UTC"
-        : configuredTimeZone;
-  if (!moment.tz.zone(timeZone)) throw new Error(`Unsupported dashboard timezone: ${configuredTimeZone}`);
+        : configuredTimeZone
+      : undefined;
+  if (timeZone && !moment.tz.zone(timeZone)) {
+    throw new Error(`Unsupported dashboard timezone: ${configuredTimeZone}`);
+  }
 
   const rawFiscalMonth = timeSettings?.fiscalYearStartMonth ?? dashboard.fiscalYearStartMonth ?? 0;
   const fiscalYearStartMonth = Number(rawFiscalMonth);
@@ -38,11 +39,11 @@ export function extractDashboardTimeSettings(dashboard: JsonObject): DashboardTi
     throw new Error(`Invalid dashboard fiscalYearStartMonth: ${String(rawFiscalMonth)}`);
   }
 
-  const rawWeekStart = asString(timeSettings?.weekStart) || asString(dashboard.weekStart) || "sunday";
-  if (rawWeekStart !== "saturday" && rawWeekStart !== "monday" && rawWeekStart !== "sunday") {
+  const rawWeekStart = asString(timeSettings?.weekStart) || asString(dashboard.weekStart);
+  if (rawWeekStart && rawWeekStart !== "saturday" && rawWeekStart !== "monday" && rawWeekStart !== "sunday") {
     throw new Error(`Invalid dashboard weekStart: ${rawWeekStart}`);
   }
-  return { timeZone, fiscalYearStartMonth, weekStart: rawWeekStart };
+  return { timeZone, fiscalYearStartMonth, weekStart: rawWeekStart as DashboardTimeSettings["weekStart"] };
 }
 
 function isRelativeDashboardTime(value: string): boolean {
@@ -112,6 +113,7 @@ function roundRelativeTime(
     return;
   }
   if (unit === "w") {
+    if (!settings.weekStart) throw new Error("Panel week rounding requires explicit dashboard weekStart");
     const firstDay = settings.weekStart === "monday" ? 1 : settings.weekStart === "saturday" ? 6 : 0;
     value.subtract((value.day() - firstDay + 7) % 7, "d").startOf("d");
     return;
@@ -130,7 +132,11 @@ function resolveGrafanaRelativeRange(
   if (!match) throw new Error(`Unsupported Panel timeFrom expression: ${value}`);
 
   const [, direction, rawAmount, rawUnit, rawRoundUnit] = match;
-  const target = moment.tz(nowMs, settings.timeZone);
+  const calendarUnits = new Set(["d", "w", "M", "Q", "y", "fQ", "fy"]);
+  if (((rawUnit && calendarUnits.has(rawUnit)) || rawRoundUnit) && !settings.timeZone) {
+    throw new Error(`Panel timeFrom ${value} requires explicit dashboard timezone`);
+  }
+  const target = settings.timeZone ? moment.tz(nowMs, settings.timeZone) : moment.utc(nowMs);
   if (direction && rawAmount && rawUnit) {
     const amount = Number.parseInt(rawAmount, 10) * (direction === "+" ? 1 : -1);
     const unit = rawUnit === "fQ" ? "Q" : rawUnit === "fy" ? "y" : rawUnit;
