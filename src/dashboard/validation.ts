@@ -18,7 +18,11 @@ import {
   isDashboardResourceV2,
 } from "./model";
 import { collectDashboardPanelContexts, extractPanelTargets, normalizeDashboardInput } from "./normalize";
-import { extractDashboardVariableDefinitions, resolvePanelTimeRange } from "./panel-time-range";
+import {
+  extractDashboardTimeSettings,
+  extractDashboardVariableDefinitions,
+  resolvePanelTimeRange,
+} from "./panel-time-range";
 import { buildValidateQueryBody, matchesValidationTarget, validatePanelTargetPromQLSyntax } from "./promql";
 import type { DashboardTarget, ValidateIssue } from "./types";
 
@@ -99,6 +103,7 @@ export async function validateDashboards(
     const dashboardTitle = normalized.title;
     const dashboardTemplateVars = extractTemplatingValues(normalized.dashboard);
     const dashboardVariables = extractDashboardVariableDefinitions(normalized.dashboard);
+    const dashboardTimeSettings = extractDashboardTimeSettings(normalized.dashboard);
 
     const tasks: Array<{
       panel: JsonObject;
@@ -131,6 +136,7 @@ export async function validateDashboards(
           dashboardFrom: options.from,
           dashboardTo: options.to,
           nowMs,
+          timeSettings: dashboardTimeSettings,
         });
         effectiveFromMs = effectiveRange.fromMs;
         effectiveToMs = effectiveRange.toMs;

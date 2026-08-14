@@ -49,6 +49,7 @@ function panelTimeFromDashboard(
     metadata: { name: "panel-time-from" },
     spec: {
       title: "panel-time-from",
+      timeSettings: { timezone: "utc", fiscalYearStartMonth: 0 },
       variables: [
         {
           kind: "CustomVariable",
@@ -306,6 +307,72 @@ describe("Dashboard Panel 时间范围验证", () => {
       String(Date.parse("2026-08-14T00:00:00.000Z")),
     ]);
     expect(milliseconds.errors[0]?.message).toContain("Unsupported Panel timeFrom expression");
+  });
+
+  it("按 Dashboard 与 browser timezone 计算日历 rounding", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-14T12:00:00.000Z"));
+    const requests: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+        return jsonResponse({
+          results: { A: { frames: [{ schema: { fields: [] }, data: { values: [] } }] } },
+        });
+      }),
+    );
+    const shanghai = panelTimeFromDashboard("now/d", "now/d");
+    shanghai.spec.timeSettings.timezone = "Asia/Shanghai";
+    const browser = panelTimeFromDashboard("now/d", "now/d");
+    browser.spec.timeSettings.timezone = "browser";
+    const explicitBrowser = panelTimeFromDashboard("now/d", "now/d");
+    explicitBrowser.spec.timeSettings.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    for (const dashboard of [shanghai, browser, explicitBrowser]) {
+      const result = await validateDashboards(validationContext(), [dashboard], validationOptions());
+      expect(result.errors).toEqual([]);
+    }
+
+    expect(requests[0]?.from).toBe(String(Date.parse("2026-08-13T16:00:00.000Z")));
+    expect(requests[1]?.from).toBe(requests[2]?.from);
+  });
+
+  it("按 timezone 保持 DST 日历日并按 fiscal month rounding", async () => {
+    vi.useFakeTimers();
+    const requests: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
+        return jsonResponse({
+          results: { A: { frames: [{ schema: { fields: [] }, data: { values: [] } }] } },
+        });
+      }),
+    );
+
+    vi.setSystemTime(new Date("2026-03-09T05:30:00.000Z"));
+    const dst = panelTimeFromDashboard("1d", "1d");
+    dst.spec.timeSettings.timezone = "America/New_York";
+    expect((await validateDashboards(validationContext(), [dst], validationOptions())).errors).toEqual([]);
+
+    vi.setSystemTime(new Date("2026-08-14T12:00:00.000Z"));
+    const fiscalQuarter = panelTimeFromDashboard("now/fQ", "now/fQ");
+    fiscalQuarter.spec.timeSettings.fiscalYearStartMonth = 3;
+    const fiscalYear = panelTimeFromDashboard("now/fy", "now/fy");
+    fiscalYear.spec.timeSettings.fiscalYearStartMonth = 3;
+    expect(
+      (await validateDashboards(validationContext(), [fiscalQuarter], validationOptions())).errors,
+    ).toEqual([]);
+    expect((await validateDashboards(validationContext(), [fiscalYear], validationOptions())).errors).toEqual(
+      [],
+    );
+
+    expect(requests.map((request) => request.from)).toEqual([
+      String(Date.parse("2026-03-08T06:30:00.000Z")),
+      String(Date.parse("2026-07-01T00:00:00.000Z")),
+      String(Date.parse("2026-04-01T00:00:00.000Z")),
+    ]);
   });
 
   it("按 classic timeFrom 重算请求窗口", async () => {
