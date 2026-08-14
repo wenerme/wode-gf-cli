@@ -7,10 +7,7 @@ import {
   buildGrafanaMacros,
   extractTemplatingValues,
   findUnresolvedTemplateTokens,
-  materializeTemplateVars,
   resolveDatasourceUid,
-  resolveTemplateString,
-  type TemplateVars,
 } from "../lib/template-vars";
 import { renderFramesText } from "../output/render";
 import type { GrafanaPromQLMacroMode } from "../promql/grafana";
@@ -20,122 +17,13 @@ import {
   dashboardResourceV2Title,
   isDashboardResourceV2,
 } from "./model";
-import {
-  collectDashboardPanelContexts,
-  extractPanelTargets,
-  extractPanelTimeFrom,
-  normalizeDashboardInput,
-} from "./normalize";
+import { collectDashboardPanelContexts, extractPanelTargets, normalizeDashboardInput } from "./normalize";
+import { extractDashboardVariableDefinitions, resolvePanelTimeRange } from "./panel-time-range";
 import { buildValidateQueryBody, matchesValidationTarget, validatePanelTargetPromQLSyntax } from "./promql";
 import type { DashboardTarget, ValidateIssue } from "./types";
 
 function isPrometheusDatasourceType(value: string | undefined): boolean {
   return String(value || "").toLowerCase() === "prometheus";
-}
-
-function isRelativeDashboardTime(value: string): boolean {
-  return /^now(?:$|[-+/])/.test(value.trim());
-}
-
-function referencedTemplateVariables(value: string): string[] {
-  const names = new Set<string>();
-  for (const match of value.matchAll(/\$\{([A-Za-z0-9_]+)(?::[^}]+)?\}|\$([A-Za-z][A-Za-z0-9_]*)/g)) {
-    const name = match[1] || match[2];
-    if (name) names.add(name);
-  }
-  return Array.from(names);
-}
-
-function dashboardVariableDefinitions(dashboard: JsonObject): JsonObject[] {
-  const templating = getObjectField(dashboard, "templating");
-  return [...(templating ? asObjectArray(templating.list) : []), ...asObjectArray(dashboard.variables)];
-}
-
-function declaredCustomVariableValues(variables: JsonObject[], name: string): string[] | undefined {
-  const variable = [...variables].reverse().find((candidate) => {
-    const source = getObjectField(candidate, "spec") || candidate;
-    return asString(source.name) === name;
-  });
-  if (!variable) return undefined;
-  const source = getObjectField(variable, "spec") || variable;
-  const kind = asString(variable.kind) || asString(variable.type);
-  if (kind !== "CustomVariable" && kind !== "custom") return undefined;
-  if (source.allowCustomValue !== false) return undefined;
-
-  const values = [...asObjectArray(source.options), ...asObjectArray(source.staticOptions)]
-    .flatMap((option) => {
-      const value = option.value;
-      if (typeof value === "string" || typeof value === "number") return [String(value)];
-      if (Array.isArray(value)) return value.map(String);
-      return [];
-    })
-    .filter((value) => value !== "$__all");
-  if (values.length === 0) {
-    const query = asString(source.query);
-    if (query)
-      values.push(
-        ...query
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean),
-      );
-  }
-  return Array.from(new Set(values));
-}
-
-function resolvePanelTimeRange(
-  panel: JsonObject,
-  vars: TemplateVars,
-  variableDefinitions: JsonObject[],
-  options: {
-    defaultFromMs: number;
-    defaultToMs: number;
-    dashboardFrom: string;
-    dashboardTo: string;
-    nowMs: number;
-  },
-): { fromMs: number; toMs: number } {
-  const timeFrom = extractPanelTimeFrom(panel);
-  if (
-    !timeFrom ||
-    !isRelativeDashboardTime(options.dashboardFrom) ||
-    !isRelativeDashboardTime(options.dashboardTo)
-  ) {
-    return { fromMs: options.defaultFromMs, toMs: options.defaultToMs };
-  }
-
-  const plainVars = materializeTemplateVars(vars);
-  for (const name of referencedTemplateVariables(timeFrom)) {
-    const value = plainVars[name];
-    if (Array.isArray(value)) {
-      throw new Error(`Panel timeFrom variable ${name} must resolve to one value`);
-    }
-    const allowedValues = declaredCustomVariableValues(variableDefinitions, name);
-    if (allowedValues && value !== undefined && !allowedValues.includes(value)) {
-      throw new Error(`Panel timeFrom variable ${name} value ${value} is outside declared options`);
-    }
-  }
-
-  const resolved = resolveTemplateString(timeFrom, vars).trim();
-  const unresolved = findUnresolvedTemplateTokens(resolved);
-  if (unresolved.length > 0) {
-    throw new Error(`Panel timeFrom has unresolved template tokens: ${unresolved.join(", ")}`);
-  }
-  if (!resolved) throw new Error("Panel timeFrom resolved to an empty value");
-
-  const duration = resolved.match(/^([0-9]+)(ms|s|m|h|d|w)$/);
-  const relative = resolved.match(/^now-([0-9]+)(ms|s|m|h|d|w)$/);
-  if (!duration && !relative) {
-    throw new Error(`Unsupported Panel timeFrom expression: ${resolved}`);
-  }
-
-  const fromExpression = duration ? `now-${resolved}` : resolved;
-  const fromMs = resolveTimeToMs(fromExpression, options.nowMs);
-  const toMs = options.nowMs;
-  if (fromMs >= toMs) {
-    throw new Error(`Panel timeFrom must produce a positive range: ${resolved}`);
-  }
-  return { fromMs, toMs };
 }
 
 export async function validateDashboards(
@@ -210,7 +98,7 @@ export async function validateDashboards(
     }
     const dashboardTitle = normalized.title;
     const dashboardTemplateVars = extractTemplatingValues(normalized.dashboard);
-    const dashboardVariables = dashboardVariableDefinitions(normalized.dashboard);
+    const dashboardVariables = extractDashboardVariableDefinitions(normalized.dashboard);
 
     const tasks: Array<{
       panel: JsonObject;
@@ -267,13 +155,13 @@ export async function validateDashboards(
       const rangeMs = effectiveToMs - effectiveFromMs;
       const scopedVars = {
         ...dashboardTemplateVars,
+        ...vars,
+        ...options.vars,
         ...buildGrafanaMacros({
           from: effectiveFromMs,
           to: effectiveToMs,
           intervalMs: options.intervalMs,
         }),
-        ...vars,
-        ...options.vars,
       };
 
       const panelDatasource = getObjectField(panel, "datasource");
