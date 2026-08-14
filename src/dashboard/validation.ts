@@ -7,7 +7,10 @@ import {
   buildGrafanaMacros,
   extractTemplatingValues,
   findUnresolvedTemplateTokens,
+  materializeTemplateVars,
   resolveDatasourceUid,
+  resolveTemplateString,
+  type TemplateVars,
 } from "../lib/template-vars";
 import { renderFramesText } from "../output/render";
 import type { GrafanaPromQLMacroMode } from "../promql/grafana";
@@ -17,12 +20,122 @@ import {
   dashboardResourceV2Title,
   isDashboardResourceV2,
 } from "./model";
-import { collectDashboardPanelContexts, extractPanelTargets, normalizeDashboardInput } from "./normalize";
+import {
+  collectDashboardPanelContexts,
+  extractPanelTargets,
+  extractPanelTimeFrom,
+  normalizeDashboardInput,
+} from "./normalize";
 import { buildValidateQueryBody, matchesValidationTarget, validatePanelTargetPromQLSyntax } from "./promql";
 import type { DashboardTarget, ValidateIssue } from "./types";
 
 function isPrometheusDatasourceType(value: string | undefined): boolean {
   return String(value || "").toLowerCase() === "prometheus";
+}
+
+function isRelativeDashboardTime(value: string): boolean {
+  return /^now(?:$|[-+/])/.test(value.trim());
+}
+
+function referencedTemplateVariables(value: string): string[] {
+  const names = new Set<string>();
+  for (const match of value.matchAll(/\$\{([A-Za-z0-9_]+)(?::[^}]+)?\}|\$([A-Za-z][A-Za-z0-9_]*)/g)) {
+    const name = match[1] || match[2];
+    if (name) names.add(name);
+  }
+  return Array.from(names);
+}
+
+function dashboardVariableDefinitions(dashboard: JsonObject): JsonObject[] {
+  const templating = getObjectField(dashboard, "templating");
+  return [...(templating ? asObjectArray(templating.list) : []), ...asObjectArray(dashboard.variables)];
+}
+
+function declaredCustomVariableValues(variables: JsonObject[], name: string): string[] | undefined {
+  const variable = [...variables].reverse().find((candidate) => {
+    const source = getObjectField(candidate, "spec") || candidate;
+    return asString(source.name) === name;
+  });
+  if (!variable) return undefined;
+  const source = getObjectField(variable, "spec") || variable;
+  const kind = asString(variable.kind) || asString(variable.type);
+  if (kind !== "CustomVariable" && kind !== "custom") return undefined;
+  if (source.allowCustomValue !== false) return undefined;
+
+  const values = [...asObjectArray(source.options), ...asObjectArray(source.staticOptions)]
+    .flatMap((option) => {
+      const value = option.value;
+      if (typeof value === "string" || typeof value === "number") return [String(value)];
+      if (Array.isArray(value)) return value.map(String);
+      return [];
+    })
+    .filter((value) => value !== "$__all");
+  if (values.length === 0) {
+    const query = asString(source.query);
+    if (query)
+      values.push(
+        ...query
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      );
+  }
+  return Array.from(new Set(values));
+}
+
+function resolvePanelTimeRange(
+  panel: JsonObject,
+  vars: TemplateVars,
+  variableDefinitions: JsonObject[],
+  options: {
+    defaultFromMs: number;
+    defaultToMs: number;
+    dashboardFrom: string;
+    dashboardTo: string;
+    nowMs: number;
+  },
+): { fromMs: number; toMs: number } {
+  const timeFrom = extractPanelTimeFrom(panel);
+  if (
+    !timeFrom ||
+    !isRelativeDashboardTime(options.dashboardFrom) ||
+    !isRelativeDashboardTime(options.dashboardTo)
+  ) {
+    return { fromMs: options.defaultFromMs, toMs: options.defaultToMs };
+  }
+
+  const plainVars = materializeTemplateVars(vars);
+  for (const name of referencedTemplateVariables(timeFrom)) {
+    const value = plainVars[name];
+    if (Array.isArray(value)) {
+      throw new Error(`Panel timeFrom variable ${name} must resolve to one value`);
+    }
+    const allowedValues = declaredCustomVariableValues(variableDefinitions, name);
+    if (allowedValues && value !== undefined && !allowedValues.includes(value)) {
+      throw new Error(`Panel timeFrom variable ${name} value ${value} is outside declared options`);
+    }
+  }
+
+  const resolved = resolveTemplateString(timeFrom, vars).trim();
+  const unresolved = findUnresolvedTemplateTokens(resolved);
+  if (unresolved.length > 0) {
+    throw new Error(`Panel timeFrom has unresolved template tokens: ${unresolved.join(", ")}`);
+  }
+  if (!resolved) throw new Error("Panel timeFrom resolved to an empty value");
+
+  const duration = resolved.match(/^([0-9]+)(ms|s|m|h|d|w)$/);
+  const relative = resolved.match(/^now-([0-9]+)(ms|s|m|h|d|w)$/);
+  if (!duration && !relative) {
+    throw new Error(`Unsupported Panel timeFrom expression: ${resolved}`);
+  }
+
+  const fromExpression = duration ? `now-${resolved}` : resolved;
+  const fromMs = resolveTimeToMs(fromExpression, options.nowMs);
+  const toMs = options.nowMs;
+  if (fromMs >= toMs) {
+    throw new Error(`Panel timeFrom must produce a positive range: ${resolved}`);
+  }
+  return { fromMs, toMs };
 }
 
 export async function validateDashboards(
@@ -56,7 +169,6 @@ export async function validateDashboards(
   const nowMs = Date.now();
   const fromMs = resolveTimeToMs(options.from, nowMs);
   const toMs = resolveTimeToMs(options.to, nowMs);
-  const rangeMs = Math.max(0, toMs - fromMs);
   const datasourceTypeByUid = new Map<string, string>();
   if (onlyDatasourceTypes.size > 0 || skipDatasourceTypes.size > 0) {
     for (const datasource of asObjectArray(await client.request<unknown[]>("GET", "/api/datasources"))) {
@@ -97,27 +209,72 @@ export async function validateDashboards(
       continue;
     }
     const dashboardTitle = normalized.title;
-    const dashboardVars = {
-      ...extractTemplatingValues(normalized.dashboard),
-      ...buildGrafanaMacros({ from: fromMs, to: toMs, intervalMs: options.intervalMs }),
-    };
+    const dashboardTemplateVars = extractTemplatingValues(normalized.dashboard);
+    const dashboardVariables = dashboardVariableDefinitions(normalized.dashboard);
 
     const tasks: Array<{
       panel: JsonObject;
       target: DashboardTarget;
       vars: ReturnType<typeof extractTemplatingValues>;
+      variableDefinitions: JsonObject[];
     }> = [];
     for (const context of collectDashboardPanelContexts(dashboardEntry)) {
       const panelVars = extractTemplatingValues({ variables: context.variables });
       for (const target of extractPanelTargets(context.panel)) {
-        tasks.push({ panel: context.panel, target, vars: panelVars });
+        tasks.push({
+          panel: context.panel,
+          target,
+          vars: panelVars,
+          variableDefinitions: [...dashboardVariables, ...context.variables],
+        });
       }
     }
 
-    await mapLimit(tasks, options.concurrency, async ({ panel, target, vars }) => {
+    await mapLimit(tasks, options.concurrency, async ({ panel, target, vars, variableDefinitions }) => {
       const panelId = Number.parseInt(String(panel.id || "0"), 10) || 0;
       if (!matchesValidationTarget(panelId, target.refId, onlySet, skipSet, onlyRefSet)) return;
-      const scopedVars = { ...dashboardVars, ...vars, ...options.vars };
+      const baseVars = { ...dashboardTemplateVars, ...vars, ...options.vars };
+      let effectiveFromMs = fromMs;
+      let effectiveToMs = toMs;
+      try {
+        const effectiveRange = resolvePanelTimeRange(panel, baseVars, variableDefinitions, {
+          defaultFromMs: fromMs,
+          defaultToMs: toMs,
+          dashboardFrom: options.from,
+          dashboardTo: options.to,
+          nowMs,
+        });
+        effectiveFromMs = effectiveRange.fromMs;
+        effectiveToMs = effectiveRange.toMs;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({
+          sourceFile: normalized.sourceFile,
+          dashboardTitle,
+          panelTitle: asString(panel.title) || "(untitled panel)",
+          panelId,
+          refId: target.refId,
+          kind: "query-error",
+          message,
+        });
+        if (options.failFast) {
+          throw new Error(
+            `Panel time range validation failed at ${dashboardTitle} / ${String(panel.title || panelId)} / ${target.refId}: ${message}`,
+          );
+        }
+        return;
+      }
+      const rangeMs = effectiveToMs - effectiveFromMs;
+      const scopedVars = {
+        ...dashboardTemplateVars,
+        ...buildGrafanaMacros({
+          from: effectiveFromMs,
+          to: effectiveToMs,
+          intervalMs: options.intervalMs,
+        }),
+        ...vars,
+        ...options.vars,
+      };
 
       const panelDatasource = getObjectField(panel, "datasource");
       const targetDatasource = getObjectField(target.raw, "datasource");
@@ -137,8 +294,8 @@ export async function validateDashboards(
         const syntaxIssue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, {
           macroMode: options.promqlMacroMode,
           vars: scopedVars,
-          fromMs,
-          toMs,
+          fromMs: effectiveFromMs,
+          toMs: effectiveToMs,
           intervalMs: options.intervalMs,
           rangeMs,
           rateInterval: msToInterval(Math.max(options.intervalMs * 4, 240_000)),
@@ -185,8 +342,8 @@ export async function validateDashboards(
       const queryBody = buildValidateQueryBody(target, {
         datasourceUid,
         vars: scopedVars,
-        fromMs,
-        toMs,
+        fromMs: effectiveFromMs,
+        toMs: effectiveToMs,
         intervalMs: options.intervalMs,
       });
       if (!queryBody) return;
@@ -206,8 +363,8 @@ export async function validateDashboards(
       }
 
       const response = await client.requestWithStatus<JsonObject>("POST", "/api/ds/query", {
-        from: String(fromMs),
-        to: String(toMs),
+        from: String(effectiveFromMs),
+        to: String(effectiveToMs),
         queries: [queryBody],
       });
       const data = asObject(response.data);

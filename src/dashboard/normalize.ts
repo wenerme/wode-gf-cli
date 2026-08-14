@@ -45,6 +45,14 @@ export function extractPanelTargets(panel: JsonObject): DashboardTarget[] {
     .filter((target): target is DashboardTarget => Boolean(target));
 }
 
+export function extractPanelTimeFrom(panel: JsonObject): string | undefined {
+  const classicTimeFrom = asString(panel.timeFrom);
+  if (classicTimeFrom) return classicTimeFrom;
+  const queryGroup = getObjectField(panel.data, "spec");
+  const queryOptions = getObjectField(queryGroup, "queryOptions");
+  return asString(queryOptions?.timeFrom);
+}
+
 function collectPanels(input: unknown): JsonObject[] {
   const panels: JsonObject[] = [];
   for (const panel of asObjectArray(input)) {
