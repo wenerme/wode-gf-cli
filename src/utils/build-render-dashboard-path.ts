@@ -8,12 +8,12 @@ export function buildRenderDashboardPath(options: {
   width: number;
   height: number;
   scale?: number;
-  tz: string;
+  tz?: string;
   theme: "light" | "dark";
   vars: string[];
   renderParams?: string[];
 }): string {
-  const timeZone = normalizeGrafanaTimeZone(options.tz);
+  const timeZone = normalizeGrafanaTimeZone(options.tz, "UTC");
   const url = new URL(`/render/d/${encodeURIComponent(options.dashboardUid)}/_`, "http://local");
   url.searchParams.set("from", normalizeRenderTime(options.from, timeZone));
   url.searchParams.set("to", normalizeRenderTime(options.to, timeZone));
@@ -22,7 +22,7 @@ export function buildRenderDashboardPath(options: {
   if (options.scale !== undefined && options.scale !== 1) {
     url.searchParams.set("scale", String(options.scale));
   }
-  url.searchParams.set("tz", timeZone);
+  if (options.tz) url.searchParams.set("tz", timeZone);
   url.searchParams.set("theme", options.theme);
 
   for (const expr of options.vars) {

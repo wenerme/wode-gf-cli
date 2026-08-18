@@ -257,7 +257,7 @@ wode-gf-cli export -o local/grafana-export
 
 Time behavior:
 - Query and validate resolve absolute/relative input to epoch milliseconds before calling `/api/ds/query`.
-- Render converts ISO absolute time to epoch milliseconds, preserves epoch milliseconds and Grafana relative expressions such as `now-6h`, and rejects invalid absolute time.
+- Render converts ISO absolute time to epoch milliseconds, preserves epoch milliseconds and Grafana relative expressions such as `now-6h`, and rejects invalid absolute time. Without `--tz`, the render URL leaves timezone selection to the Dashboard; naive ISO input uses `UTC` for deterministic parsing.
 - Validate time formatter precedence is explicit `--tz`, then Dashboard timezone, then `UTC`.
 - Supported time variable formatters include `date`, `date:iso`, `date:seconds`, and validated Moment-style patterns such as `date:YYYYMMDD`.
 

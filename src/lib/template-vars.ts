@@ -178,7 +178,7 @@ function interpolateSqlMacroFunctions(
     (matched, macro: string, rawArgs: string) => {
       const args = rawArgs.split(",").map((arg) => arg.trim());
       const column = args[0];
-      if (!column) throw new Error(`Grafana SQL macro $__${macro} requires a column argument`);
+      if (!column) return matched;
       if (macro === "timeFilter") {
         if (from === undefined || to === undefined) {
           const fromExpression = scalarTemplateValue(vars.__timeFrom);

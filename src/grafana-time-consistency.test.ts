@@ -67,6 +67,11 @@ describe("Grafana 时间变量一致性", () => {
     expect(() => resolveTemplateString(UnsupportedDateRef, vars)).toThrow(
       "Unsupported Grafana date format: BOGUS",
     );
+    expect(
+      resolveTemplateString("WHERE $__timeFilter()", {
+        __timeFilter: '"time" BETWEEN to_timestamp(1) AND to_timestamp(2)',
+      }),
+    ).toBe('WHERE "time" BETWEEN to_timestamp(1) AND to_timestamp(2)');
   });
 
   it("render 将 ISO 绝对时间转成毫秒并保留相对时间与毫秒 epoch", () => {
@@ -100,6 +105,17 @@ describe("Grafana 时间变量一致性", () => {
     expect(panelUrl.searchParams.get("to")).toBe(toEpoch);
     expect(dashboardUrl.searchParams.get("from")).toBe("now-6h");
     expect(dashboardUrl.searchParams.get("to")).toBe("now");
+    expect(dashboardUrl.searchParams.has("tz")).toBe(true);
+    const dashboardTimeZonePath = buildRenderDashboardPath({
+      dashboardUid: "sla-preview",
+      from: "now-6h",
+      to: "now",
+      width: 1600,
+      height: 900,
+      theme: "light",
+      vars: [],
+    });
+    expect(new URL(dashboardTimeZonePath, "http://local").searchParams.has("tz")).toBe(false);
     expect(() =>
       buildRenderPanelPath({
         dashboardUid: "sla-preview",

@@ -9,12 +9,12 @@ export function buildRenderPanelPath(options: {
   width: number;
   height: number;
   scale?: number;
-  tz: string;
+  tz?: string;
   theme: "light" | "dark";
   vars: string[];
   renderParams?: string[];
 }): string {
-  const timeZone = normalizeGrafanaTimeZone(options.tz);
+  const timeZone = normalizeGrafanaTimeZone(options.tz, "UTC");
   const url = new URL(`/render/d-solo/${encodeURIComponent(options.dashboardUid)}/_`, "http://local");
   url.searchParams.set("panelId", String(options.panelId));
   url.searchParams.set("from", normalizeRenderTime(options.from, timeZone));
@@ -24,7 +24,7 @@ export function buildRenderPanelPath(options: {
   if (options.scale !== undefined && options.scale !== 1) {
     url.searchParams.set("scale", String(options.scale));
   }
-  url.searchParams.set("tz", timeZone);
+  if (options.tz) url.searchParams.set("tz", timeZone);
   url.searchParams.set("theme", options.theme);
 
   for (const expr of options.vars) {

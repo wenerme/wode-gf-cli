@@ -246,7 +246,7 @@ wode-gf-cli --context my-prod render panel --dashboard-uid <uid> --panel-id 1 --
 时间行为：
 
 - query 与 validate 在调用 `/api/ds/query` 前，将绝对时间或相对时间统一解析为 epoch 毫秒。
-- render 将 ISO 绝对时间转换为 epoch 毫秒，保留 epoch 毫秒及 `now-6h` 等 Grafana 相对表达式，并拒绝非法绝对时间。
+- render 将 ISO 绝对时间转换为 epoch 毫秒，保留 epoch 毫秒及 `now-6h` 等 Grafana 相对表达式，并拒绝非法绝对时间。未指定 `--tz` 时，render URL 交由 Dashboard 决定时区；无 offset 的 ISO 输入按 `UTC` 确定性解析。
 - validate 的 formatter 时区优先级为显式 `--tz`、Dashboard timezone、`UTC`。
 - 时间变量支持 `date`、`date:iso`、`date:seconds` 及经过校验的 Moment 风格格式，例如 `date:YYYYMMDD`。
 

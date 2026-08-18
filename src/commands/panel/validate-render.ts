@@ -3,7 +3,12 @@ import type { Command } from "commander";
 import { asObjectArray, asString } from "../../lib/json-narrow";
 import { findPanel } from "../../lib/panel-tree";
 import { parseGrafanaPromQLMacroMode } from "../../promql/grafana";
-import { buildRenderPanelPath, parsePositiveInt, parseRenderScale } from "../../utils";
+import {
+  buildRenderPanelPath,
+  normalizeGrafanaTimeZone,
+  parsePositiveInt,
+  parseRenderScale,
+} from "../../utils";
 import type { CommandAppContext } from "../runtime";
 import { loadDashboardSelection, renderPanelImage } from "./io";
 import { normalizeRefIds, parsePanelRef, targetHasValidationQuery } from "./model";
@@ -16,6 +21,7 @@ type ValidateOptions = {
   refId?: string[];
   failFast?: boolean;
   promqlMacroMode?: string;
+  tz?: string;
   var?: string[];
 };
 type RenderOptions = {
@@ -40,6 +46,7 @@ export function addPanelValidateCommand(panelCommand: Command, app: CommandAppCo
     .description("Validate one panel's queries by DASH/PANEL")
     .option("--from <time>", "query time start", "now-1h")
     .option("--to <time>", "query time end", "now")
+    .option("--tz <timezone>", "override dashboard timezone for time variables")
     .option("--timeout <ms>", "request timeout milliseconds for validate", "60000")
     .option("--interval-ms <ms>", "grafana built-in interval in milliseconds", "60000")
     .option("--ref-id <id>", "only validate query refId, repeatable", collectList, [])
@@ -100,6 +107,7 @@ export function addPanelValidateCommand(panelCommand: Command, app: CommandAppCo
           onlyPanelIds: [parsed.panelId],
           onlyRefIds,
           vars: varOverrides,
+          timeZone: options.tz ? normalizeGrafanaTimeZone(options.tz) : undefined,
         },
       );
 
@@ -139,7 +147,7 @@ export function addPanelRenderCommand(panelCommand: Command, app: CommandAppCont
     .option("--scale <factor>", "device scale factor / output pixel ratio")
     .option("--hdpi", "shortcut for --scale 2 when --scale is not set")
     .option("--render-param <expr>", "extra render URL parameter key=value, repeatable", collectList, [])
-    .option("--tz <timezone>", "timezone", "UTC")
+    .option("--tz <timezone>", "override dashboard timezone")
     .option("--theme <theme>", "light|dark", "light")
     .option("--render-timeout <ms>", "render request timeout milliseconds", "60000")
     .option("--var <expr>", "template variable key=value, repeatable", collectList, [])
@@ -158,7 +166,7 @@ export function addPanelRenderCommand(panelCommand: Command, app: CommandAppCont
         width: parsePositiveInt(options.width, 1600),
         height: parsePositiveInt(options.height, 900),
         scale: parseRenderScale(options.scale, Boolean(options.hdpi)),
-        tz: String(options.tz || "UTC").trim(),
+        tz: options.tz ? normalizeGrafanaTimeZone(options.tz) : undefined,
         theme: String(options.theme || "light").trim() as "light" | "dark",
         vars: options.var || [],
         renderParams: options.renderParam || [],
