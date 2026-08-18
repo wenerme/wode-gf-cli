@@ -1,3 +1,4 @@
+import { formatGrafanaTimeVariable } from "../utils/resolve-time-to-ms";
 import { scanGrafanaPromQLTemplates } from "./grafana-template-scanner";
 import {
   type GrafanaPromQLCustomAllValue,
@@ -79,8 +80,14 @@ function evalReplacement(
 ): GrafanaPromQLVariableValue | undefined {
   const vars = options.vars || {};
   const direct = vars[token.raw] ?? vars[token.fullName] ?? vars[token.name];
-  if (direct !== undefined)
+  if (direct !== undefined) {
+    if ((token.fullName === "__from" || token.fullName === "__to") && token.format) {
+      const value = isCustomAllValue(direct) ? direct.value : direct;
+      if (Array.isArray(value)) throw new Error(`${token.fullName} must resolve to one time value`);
+      return formatGrafanaTimeVariable(value, token.format, options.timeZone);
+    }
     return isCustomAllValue(direct) ? direct : formatVariableValue(direct, token.format);
+  }
 
   const intervalMs = options.intervalMs ?? 60_000;
   const rangeMs =
@@ -102,9 +109,11 @@ function evalReplacement(
     case "__range_s":
       return String(Math.round(rangeMs / 1000));
     case "__from":
-      return formatTimeMacro(fromMs, token.format);
+      return token.format
+        ? formatGrafanaTimeVariable(fromMs, token.format, options.timeZone)
+        : String(fromMs);
     case "__to":
-      return formatTimeMacro(toMs, token.format);
+      return token.format ? formatGrafanaTimeVariable(toMs, token.format, options.timeZone) : String(toMs);
     default:
       return undefined;
   }
@@ -167,30 +176,6 @@ function formatVariableValue(value: string | string[], formatter?: string): stri
   if (format === "doublequote") return values.map((item) => `"${item.replaceAll('"', '\\"')}"`).join(",");
   if (format === "text") return values.join(" + ");
   return values[0] || "";
-}
-
-function formatTimeMacro(ms: number, format: string | undefined): string {
-  if (!format) return String(ms);
-  const parts = format.split(":");
-  if (parts[0]?.toLowerCase() !== "date") return String(ms);
-  const date = new Date(ms);
-  const dateFormat = parts.slice(1).join(":");
-  if (!dateFormat || dateFormat === "iso") return date.toISOString();
-  if (dateFormat === "seconds") return String(Math.floor(ms / 1000));
-  return formatDatePattern(date, dateFormat);
-}
-
-function formatDatePattern(date: Date, pattern: string): string {
-  const pad = (value: number, length = 2) => String(value).padStart(length, "0");
-  return pattern
-    .replaceAll("YYYY", String(date.getUTCFullYear()))
-    .replaceAll("MM", pad(date.getUTCMonth() + 1))
-    .replaceAll("DD", pad(date.getUTCDate()))
-    .replaceAll("HH", pad(date.getUTCHours()))
-    .replaceAll("hh", pad(date.getUTCHours()))
-    .replaceAll("mm", pad(date.getUTCMinutes()))
-    .replaceAll("ss", pad(date.getUTCSeconds()))
-    .replaceAll("SSS", pad(date.getUTCMilliseconds(), 3));
 }
 
 function replaceTokens(

@@ -5,7 +5,7 @@ import { GrafanaClient } from "../client";
 import { asObject, asString, getObjectField } from "../lib/json-narrow";
 import { buildGrafanaMacros, resolveTemplateString, resolveTemplateValue } from "../lib/template-vars";
 import { type ResourceSelector, ResourceSelectorSchema } from "../schema";
-import { parsePositiveInt, parseVarAssignments } from "../utils";
+import { normalizeGrafanaTimeZone, parsePositiveInt, parseVarAssignments, resolveTimeToMs } from "../utils";
 import type { CommandAppContext } from "./runtime";
 
 type JsonObject = Record<string, unknown>;
@@ -46,6 +46,7 @@ export function buildQueryCommand(app: CommandAppContext) {
     .option("--query <expr>", "query object patch path=value, repeatable", collectList, [])
     .option("--from <time>", "quick query time start", "now-1h")
     .option("--to <time>", "quick query time end", "now")
+    .option("--tz <timezone>", "time variable timezone", "UTC")
     .option("--format <format>", "quick query format", "table")
     .option("--ref-id <id>", "quick query refId", "A")
     .option("--max-data-points <n>", "quick query max datapoints", "1000")
@@ -74,11 +75,17 @@ export function buildQueryCommand(app: CommandAppContext) {
         const refId = String(options.refId || "A").trim() || "A";
         const from = String(options.from || "now-1h").trim();
         const to = String(options.to || "now").trim();
+        const timeZone = normalizeGrafanaTimeZone(String(options.tz || "UTC"));
+        const nowMs = Date.now();
+        const fromMs = resolveTimeToMs(from, nowMs, timeZone);
+        const toMs = resolveTimeToMs(to, nowMs, timeZone);
+        if (fromMs >= toMs) throw new Error(`Query time range must be positive: from=${from} to=${to}`);
         const intervalMs = parsePositiveInt(options.intervalMs, 60_000);
+        const resolveOptions = { timeZone, datasourceType: datasource.type };
 
         // built-in Grafana macros + user vars (user vars take precedence)
         const vars = {
-          ...buildGrafanaMacros({ from, to, intervalMs }),
+          ...buildGrafanaMacros({ from: fromMs, to: toMs, intervalMs, datasourceType: datasource.type }),
           ...userVars,
         };
 
@@ -96,13 +103,13 @@ export function buildQueryCommand(app: CommandAppContext) {
             datasource: { uid: datasource.uid },
           };
           if (options.sql) {
-            queryObject.rawSql = resolveTemplateString(String(options.sql), vars);
+            queryObject.rawSql = resolveTemplateString(String(options.sql), vars, resolveOptions);
             queryObject.format = String(options.format || "table").trim() || "table";
             queryObject.intervalMs = parsePositiveInt(options.intervalMs, 60_000);
             queryObject.maxDataPoints = parsePositiveInt(options.maxDataPoints, 1_000);
           }
           if (options.expr) {
-            queryObject.expr = resolveTemplateString(String(options.expr), vars);
+            queryObject.expr = resolveTemplateString(String(options.expr), vars, resolveOptions);
             queryObject.format = String(options.format || "time_series").trim() || "time_series";
             queryObject.intervalMs = parsePositiveInt(options.intervalMs, 60_000);
             queryObject.maxDataPoints = parsePositiveInt(options.maxDataPoints, 1_000);
@@ -114,7 +121,7 @@ export function buildQueryCommand(app: CommandAppContext) {
           setPathValue(queryObject, queryPath, value);
         }
 
-        queryObject = resolveTemplateValue(queryObject, vars) as JsonObject;
+        queryObject = resolveTemplateValue(queryObject, vars, resolveOptions) as JsonObject;
         if (!asObject(queryObject.datasource)) {
           queryObject.datasource = { uid: datasource.uid };
         }
@@ -122,7 +129,7 @@ export function buildQueryCommand(app: CommandAppContext) {
           queryObject.refId = refId;
         }
 
-        const payload = { from, to, queries: [queryObject] };
+        const payload = { from: String(fromMs), to: String(toMs), queries: [queryObject] };
         const response = await client.requestWithStatus<JsonObject>("POST", "/api/ds/query", payload);
         const body = asObject(response.data);
         const result = body ? getObjectField(getObjectField(body, "results") || {}, refId) : undefined;

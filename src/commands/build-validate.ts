@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Command } from "commander";
 import { ValidateOptionsSchema } from "../schema";
-import { parsePositiveInt, parseSkipPanelIds, parseVarAssignments } from "../utils";
+import { normalizeGrafanaTimeZone, parsePositiveInt, parseSkipPanelIds, parseVarAssignments } from "../utils";
 import { validateAlertRules } from "./build-alert-ops";
 import type { CommandAppContext, ValidateIssue } from "./runtime";
 
@@ -24,6 +24,7 @@ export function buildValidateCommand(app: CommandAppContext) {
     .option("--skip-type <type>", "skip datasource type, repeatable", collectList, [])
     .option("--from <time>", "query time start", "now-1h")
     .option("--to <time>", "query time end", "now")
+    .option("--tz <timezone>", "override dashboard timezone for time variables")
     .option("--timeout <ms>", "request timeout milliseconds for validate", "60000")
     .option("--interval-ms <ms>", "grafana built-in interval in milliseconds", "60000")
     .option("--concurrency <n>", "request concurrency", "4")
@@ -38,6 +39,7 @@ export function buildValidateCommand(app: CommandAppContext) {
       const parsedOptions = ValidateOptionsSchema.parse({
         from: String(options.from || "now-1h").trim(),
         to: String(options.to || "now").trim(),
+        timeZone: options.tz ? normalizeGrafanaTimeZone(String(options.tz)) : undefined,
         timeoutMs: parsePositiveInt(options.timeout, 60_000),
         intervalMs: parsePositiveInt(options.intervalMs, 60_000),
         concurrency: parsePositiveInt(options.concurrency, 4),
@@ -70,6 +72,7 @@ export function buildValidateCommand(app: CommandAppContext) {
               datasourceTypes: parsedOptions.datasourceTypes,
               skipTypes: parsedOptions.skipTypes,
               vars: varOverrides,
+              timeZone: parsedOptions.timeZone,
             })
           : { errors: [], warnings: [] };
 

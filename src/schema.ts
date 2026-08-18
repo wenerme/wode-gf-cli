@@ -103,6 +103,7 @@ export type PromQLMacroMode = z.infer<typeof PromQLMacroModeSchema>;
 export const ValidateOptionsSchema = z.object({
   from: z.string().min(1),
   to: z.string().min(1),
+  timeZone: z.string().min(1).optional(),
   timeoutMs: z.number().int().min(1000),
   intervalMs: z.number().int().min(1000),
   concurrency: z.number().int().min(1).max(32),

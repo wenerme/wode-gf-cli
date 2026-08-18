@@ -1,5 +1,5 @@
 import { msToInterval } from "../utils/ms-to-interval";
-import { resolveTimeToMs } from "../utils/resolve-time-to-ms";
+import { formatGrafanaTimeVariable, resolveTimeToMs } from "../utils/resolve-time-to-ms";
 import { calcClsIntervalSpec } from "./cls-interval";
 import { asObjectArray, asString, getObjectField } from "./json-narrow";
 
@@ -8,6 +8,10 @@ export type TemplateVarValue = string | string[];
 export type TemplateVarState = { value: TemplateVarValue; isCustomAll: true };
 export type TemplateVars = Record<string, TemplateVarValue | TemplateVarState>;
 export type PlainTemplateVars = Record<string, TemplateVarValue>;
+export type TemplateResolveOptions = {
+  timeZone?: string;
+  datasourceType?: string;
+};
 
 function isTemplateVarState(value: TemplateVarValue | TemplateVarState): value is TemplateVarState {
   return typeof value === "object" && !Array.isArray(value) && value.isCustomAll === true;
@@ -115,19 +119,104 @@ function splitTemplateToken(token: string): { name: string; formatter?: string }
   };
 }
 
-export function resolveTemplateString(input: string, vars: TemplateVars): string {
+function scalarTemplateValue(value: TemplateVarValue | TemplateVarState | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const materialized = isTemplateVarState(value) ? value.value : value;
+  return Array.isArray(materialized) ? materialized[0] : materialized;
+}
+
+function templateEpochSeconds(vars: TemplateVars, name: "__from" | "__to"): number | undefined {
+  const value = Number(scalarTemplateValue(vars[name]));
+  return Number.isFinite(value) ? Math.floor(value / 1000) : undefined;
+}
+
+function sqlDialect(datasourceType: string | undefined): "mysql" | "postgres" | "other" {
+  const type = String(datasourceType || "").toLowerCase();
+  if (type === "mysql") return "mysql";
+  if (type === "postgres" || type.includes("postgresql")) return "postgres";
+  return "other";
+}
+
+function intervalSeconds(raw: string, vars: TemplateVars): number {
+  const resolved = raw
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/^\$\{__interval\}$|^\$__interval$/, scalarTemplateValue(vars.__interval) || "");
+  const match = /^([0-9]+)(ms|s|m|h|d|w)$/.exec(resolved);
+  if (!match) throw new Error(`Unsupported Grafana SQL interval: ${raw}`);
+  const amount = Number.parseInt(match[1] || "0", 10);
+  const unit = match[2];
+  const milliseconds =
+    amount *
+    (unit === "ms"
+      ? 1
+      : unit === "s"
+        ? 1000
+        : unit === "m"
+          ? 60_000
+          : unit === "h"
+            ? 3_600_000
+            : unit === "d"
+              ? 86_400_000
+              : 604_800_000);
+  if (milliseconds < 1000 || milliseconds % 1000 !== 0) {
+    throw new Error(`Grafana SQL interval must resolve to whole seconds: ${raw}`);
+  }
+  return milliseconds / 1000;
+}
+
+function interpolateSqlMacroFunctions(
+  input: string,
+  vars: TemplateVars,
+  datasourceType: string | undefined,
+): string {
+  const dialect = sqlDialect(datasourceType);
+  const from = templateEpochSeconds(vars, "__from");
+  const to = templateEpochSeconds(vars, "__to");
+  return input.replace(
+    /\$__(timeFilter|timeGroupAlias)\(([^)]*)\)/g,
+    (matched, macro: string, rawArgs: string) => {
+      const args = rawArgs.split(",").map((arg) => arg.trim());
+      const column = args[0];
+      if (!column) throw new Error(`Grafana SQL macro $__${macro} requires a column argument`);
+      if (macro === "timeFilter") {
+        if (from === undefined || to === undefined) {
+          const fromExpression = scalarTemplateValue(vars.__timeFrom);
+          const toExpression = scalarTemplateValue(vars.__timeTo);
+          if (!fromExpression || !toExpression) return matched;
+          const unquoted = column.replace(/^"|"$/g, "");
+          return `"${unquoted}" BETWEEN ${fromExpression} AND ${toExpression}`;
+        }
+        if (dialect === "mysql") {
+          return `${column} BETWEEN FROM_UNIXTIME(${from}) AND FROM_UNIXTIME(${to})`;
+        }
+        if (dialect === "postgres") {
+          return `${column} BETWEEN to_timestamp(${from}) AND to_timestamp(${to})`;
+        }
+        const unquoted = column.replace(/^"|"$/g, "");
+        return `"${unquoted}" BETWEEN to_timestamp(${from}) AND to_timestamp(${to})`;
+      }
+      if (dialect === "other") return matched;
+      if (!args[1]) throw new Error("Grafana SQL macro $__timeGroupAlias requires an interval argument");
+      const seconds = intervalSeconds(args[1], vars);
+      const grouped =
+        dialect === "mysql"
+          ? `UNIX_TIMESTAMP(${column}) DIV ${seconds} * ${seconds}`
+          : `floor(extract(epoch from ${column})/${seconds})*${seconds}`;
+      return `${grouped} AS "time"`;
+    },
+  );
+}
+
+export function resolveTemplateString(
+  input: string,
+  vars: TemplateVars,
+  options: TemplateResolveOptions = {},
+): string {
   let output = input;
+  output = interpolateSqlMacroFunctions(output, vars, options.datasourceType);
 
-  output = output.replace(/\$__timeFilter\(([^)]+)\)/g, (_matched, rawColumn: string) => {
-    const column = rawColumn.trim().replace(/^"|"$/g, "");
-    if (!column) return _matched;
-    const fromExpr = vars.__timeFrom;
-    const toExpr = vars.__timeTo;
-    if (!fromExpr || !toExpr) return _matched;
-    return `"${column}" BETWEEN ${fromExpr} AND ${toExpr}`;
-  });
-
-  for (const macro of ["__timeFrom", "__timeTo", "__timeFilter"]) {
+  for (const macro of ["__timeFrom", "__timeTo", "__timeFilter", "__unixEpochFrom", "__unixEpochTo"]) {
     const value = vars[macro];
     if (!value) continue;
     output = output.replaceAll(`$${macro}()`, formatTemplateValue(value));
@@ -139,6 +228,11 @@ export function resolveTemplateString(input: string, vars: TemplateVars): string
     const { name, formatter } = splitTemplateToken(token);
     const value = vars[token] ?? vars[name];
     if (value !== undefined) {
+      if ((name === "__from" || name === "__to") && formatter) {
+        const scalar = scalarTemplateValue(value);
+        if (scalar === undefined) throw new Error(`Grafana time variable ${name} has no scalar value`);
+        return formatGrafanaTimeVariable(scalar, formatter, options.timeZone);
+      }
       const formatted = formatTemplateValue(value, formatter);
       if (formatted.startsWith("$")) return matched;
       return formatted;
@@ -170,13 +264,17 @@ export function findUnresolvedTemplateTokens(value: unknown): string[] {
   return Array.from(tokens).sort();
 }
 
-export function resolveTemplateValue(value: unknown, vars: TemplateVars): unknown {
-  if (typeof value === "string") return resolveTemplateString(value, vars);
-  if (Array.isArray(value)) return value.map((v) => resolveTemplateValue(v, vars));
+export function resolveTemplateValue(
+  value: unknown,
+  vars: TemplateVars,
+  options: TemplateResolveOptions = {},
+): unknown {
+  if (typeof value === "string") return resolveTemplateString(value, vars, options);
+  if (Array.isArray(value)) return value.map((v) => resolveTemplateValue(v, vars, options));
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = resolveTemplateValue(v, vars);
+    out[k] = resolveTemplateValue(v, vars, options);
   }
   return out;
 }
@@ -211,6 +309,7 @@ export type GrafanaMacroOptions = {
   nowMs?: number;
   intervalMs?: number; // panel interval in ms, default 60000
   maxDataPoints?: number; // used to calculate $__cls_interval step, default 150
+  datasourceType?: string;
 };
 
 /**
@@ -232,13 +331,20 @@ export function buildGrafanaMacros(opts: GrafanaMacroOptions = {}): TemplateVars
   const intervalMs = opts.intervalMs ?? 60_000;
   const maxDataPoints = opts.maxDataPoints ?? 150;
   const clsInterval = calcClsIntervalSpec(fromMs, toMs, maxDataPoints);
+  const dialect = sqlDialect(opts.datasourceType);
+  const fromSeconds = Math.floor(fromMs / 1000);
+  const toSeconds = Math.floor(toMs / 1000);
+  const timeFrom = dialect === "mysql" ? `FROM_UNIXTIME(${fromSeconds})` : `to_timestamp(${fromSeconds})`;
+  const timeTo = dialect === "mysql" ? `FROM_UNIXTIME(${toSeconds})` : `to_timestamp(${toSeconds})`;
 
   return {
     __from: String(fromMs),
     __to: String(toMs),
-    __timeFrom: `to_timestamp(${fromMs / 1000})`,
-    __timeTo: `to_timestamp(${toMs / 1000})`,
-    __timeFilter: `"time" BETWEEN to_timestamp(${fromMs / 1000}) AND to_timestamp(${toMs / 1000})`,
+    __timeFrom: timeFrom,
+    __timeTo: timeTo,
+    __timeFilter: `"time" BETWEEN ${timeFrom} AND ${timeTo}`,
+    __unixEpochFrom: String(fromSeconds),
+    __unixEpochTo: String(toSeconds),
     __interval_ms: String(intervalMs),
     __interval: msToInterval(intervalMs),
     __cls_interval: clsInterval.sql,

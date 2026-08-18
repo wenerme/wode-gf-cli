@@ -48,6 +48,7 @@ export async function validateDashboards(
     datasourceTypes?: string[];
     skipTypes?: string[];
     vars: Record<string, string>;
+    timeZone?: string;
     promqlMacroMode?: GrafanaPromQLMacroMode;
   },
 ): Promise<{ errors: ValidateIssue[]; warnings: ValidateIssue[] }> {
@@ -60,15 +61,22 @@ export async function validateDashboards(
   const onlyDatasourceTypes = new Set(options.datasourceTypes || []);
   const skipDatasourceTypes = new Set(options.skipTypes || []);
   const nowMs = Date.now();
-  const fromMs = resolveTimeToMs(options.from, nowMs);
-  const toMs = resolveTimeToMs(options.to, nowMs);
   const datasourceTypeByUid = new Map<string, string>();
+  let datasourceTypesLoaded = false;
+  let datasourceTypesPromise: Promise<void> | undefined;
+  const loadDatasourceTypes = () => {
+    datasourceTypesPromise ??= (async () => {
+      for (const datasource of asObjectArray(await client.request<unknown[]>("GET", "/api/datasources"))) {
+        const uid = asString(datasource.uid);
+        const type = asString(datasource.type);
+        if (uid && type) datasourceTypeByUid.set(uid, type);
+      }
+      datasourceTypesLoaded = true;
+    })();
+    return datasourceTypesPromise;
+  };
   if (onlyDatasourceTypes.size > 0 || skipDatasourceTypes.size > 0) {
-    for (const datasource of asObjectArray(await client.request<unknown[]>("GET", "/api/datasources"))) {
-      const uid = asString(datasource.uid);
-      const type = asString(datasource.type);
-      if (uid && type) datasourceTypeByUid.set(uid, type);
-    }
+    await loadDatasourceTypes();
   }
 
   for (const dashboardEntry of dashboards) {
@@ -116,6 +124,38 @@ export async function validateDashboards(
         refId: "-",
         kind: "query-error",
         message: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+    const timeZone = options.timeZone || dashboardTimeSettings.timeZone || "UTC";
+    let fromMs: number;
+    let toMs: number;
+    try {
+      fromMs = resolveTimeToMs(options.from, nowMs, timeZone);
+      toMs = resolveTimeToMs(options.to, nowMs, timeZone);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push({
+        sourceFile: normalized.sourceFile,
+        dashboardTitle,
+        panelTitle: "(dashboard time range)",
+        panelId: 0,
+        refId: "-",
+        kind: "query-error",
+        message,
+      });
+      if (options.failFast) throw error;
+      continue;
+    }
+    if (fromMs >= toMs) {
+      errors.push({
+        sourceFile: normalized.sourceFile,
+        dashboardTitle,
+        panelTitle: "(dashboard time range)",
+        panelId: 0,
+        refId: "-",
+        kind: "query-error",
+        message: `Dashboard time range must be positive: from=${options.from} to=${options.to}`,
       });
       continue;
     }
@@ -173,6 +213,20 @@ export async function validateDashboards(
         }
         return;
       }
+      const panelDatasource = getObjectField(panel, "datasource");
+      const targetDatasource = getObjectField(target.raw, "datasource");
+      const datasourceUid = resolveDatasourceUid(
+        asString(panelDatasource?.uid),
+        asString(targetDatasource?.uid),
+        baseVars,
+      );
+      const targetDatasourceType = asString(targetDatasource?.type) || asString(panelDatasource?.type);
+      if (datasourceUid && !targetDatasourceType && !datasourceTypesLoaded) await loadDatasourceTypes();
+      const datasourceType = datasourceUid
+        ? datasourceTypeByUid.get(datasourceUid) || targetDatasourceType
+        : targetDatasourceType;
+      if (datasourceType && onlyDatasourceTypes.size > 0 && !onlyDatasourceTypes.has(datasourceType)) return;
+      if (datasourceType && skipDatasourceTypes.has(datasourceType)) return;
       const rangeMs = effectiveToMs - effectiveFromMs;
       const scopedVars = {
         ...dashboardTemplateVars,
@@ -182,22 +236,9 @@ export async function validateDashboards(
           from: effectiveFromMs,
           to: effectiveToMs,
           intervalMs: options.intervalMs,
+          datasourceType,
         }),
       };
-
-      const panelDatasource = getObjectField(panel, "datasource");
-      const targetDatasource = getObjectField(target.raw, "datasource");
-      const datasourceUid = resolveDatasourceUid(
-        asString(panelDatasource?.uid),
-        asString(targetDatasource?.uid),
-        scopedVars,
-      );
-      const targetDatasourceType = asString(targetDatasource?.type) || asString(panelDatasource?.type);
-      const datasourceType = datasourceUid
-        ? datasourceTypeByUid.get(datasourceUid) || targetDatasourceType
-        : targetDatasourceType;
-      if (datasourceType && onlyDatasourceTypes.size > 0 && !onlyDatasourceTypes.has(datasourceType)) return;
-      if (datasourceType && skipDatasourceTypes.has(datasourceType)) return;
 
       if (isPrometheusDatasourceType(datasourceType)) {
         const syntaxIssue = validatePanelTargetPromQLSyntax(dashboardTitle, panel, target, {
@@ -207,6 +248,7 @@ export async function validateDashboards(
           toMs: effectiveToMs,
           intervalMs: options.intervalMs,
           rangeMs,
+          timeZone,
           rateInterval: msToInterval(Math.max(options.intervalMs * 4, 240_000)),
           datasourceUid,
           datasourceType,
@@ -248,13 +290,37 @@ export async function validateDashboards(
         return;
       }
 
-      const queryBody = buildValidateQueryBody(target, {
-        datasourceUid,
-        vars: scopedVars,
-        fromMs: effectiveFromMs,
-        toMs: effectiveToMs,
-        intervalMs: options.intervalMs,
-      });
+      let queryBody: JsonObject | undefined;
+      try {
+        queryBody = buildValidateQueryBody(target, {
+          datasourceUid,
+          datasourceType,
+          timeZone,
+          vars: scopedVars,
+          fromMs: effectiveFromMs,
+          toMs: effectiveToMs,
+          intervalMs: options.intervalMs,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({
+          sourceFile: normalized.sourceFile,
+          dashboardTitle,
+          panelTitle: asString(panel.title) || "(untitled panel)",
+          panelId,
+          refId: target.refId,
+          datasourceUid,
+          datasourceType,
+          kind: "query-error",
+          message: `Template expansion failed: ${message}`,
+        });
+        if (options.failFast) {
+          throw new Error(
+            `Template expansion failed at ${dashboardTitle} / ${String(panel.title || panelId)} / ${target.refId}: ${message}`,
+          );
+        }
+        return;
+      }
       if (!queryBody) return;
       const unresolvedTokens = findUnresolvedTemplateTokens(queryBody);
       if (unresolvedTokens.length > 0) {

@@ -7,4 +7,10 @@ export { parseRenderScale } from "./parse-render-scale";
 export { parseRenderVar } from "./parse-render-var";
 export { parseSkipPanelIds } from "./parse-skip-panel-ids";
 export { parseVarAssignments } from "./parse-var-assignments";
-export { resolveTimeToMs } from "./resolve-time-to-ms";
+export {
+  formatGrafanaTimeVariable,
+  isGrafanaRelativeTime,
+  normalizeGrafanaTimeZone,
+  normalizeRenderTime,
+  resolveTimeToMs,
+} from "./resolve-time-to-ms";

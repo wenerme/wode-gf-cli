@@ -1,4 +1,5 @@
 import { parseRenderVar } from "./parse-render-var";
+import { normalizeGrafanaTimeZone, normalizeRenderTime } from "./resolve-time-to-ms";
 
 export function buildRenderPanelPath(options: {
   dashboardUid: string;
@@ -13,16 +14,17 @@ export function buildRenderPanelPath(options: {
   vars: string[];
   renderParams?: string[];
 }): string {
+  const timeZone = normalizeGrafanaTimeZone(options.tz);
   const url = new URL(`/render/d-solo/${encodeURIComponent(options.dashboardUid)}/_`, "http://local");
   url.searchParams.set("panelId", String(options.panelId));
-  url.searchParams.set("from", options.from);
-  url.searchParams.set("to", options.to);
+  url.searchParams.set("from", normalizeRenderTime(options.from, timeZone));
+  url.searchParams.set("to", normalizeRenderTime(options.to, timeZone));
   url.searchParams.set("width", String(options.width));
   url.searchParams.set("height", String(options.height));
   if (options.scale !== undefined && options.scale !== 1) {
     url.searchParams.set("scale", String(options.scale));
   }
-  url.searchParams.set("tz", options.tz);
+  url.searchParams.set("tz", timeZone);
   url.searchParams.set("theme", options.theme);
 
   for (const expr of options.vars) {

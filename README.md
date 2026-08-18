@@ -194,6 +194,7 @@ wode-gf-cli --context local diff -i local/grafana-export-v2/dashboard-v2 --resou
 wode-gf-cli --context local validate ./grafana --concurrency 4 --var env=prod
 wode-gf-cli --context local validate ./grafana --concurrency 2 --timeout 60000
 wode-gf-cli --context local validate ./grafana --interval-ms 60000
+wode-gf-cli --context local validate ./grafana --tz Asia/Shanghai
 wode-gf-cli --context local validate ./grafana --syntax-only --promql-macro-mode keep
 
 # isolate one query in a remote panel
@@ -201,6 +202,7 @@ wode-gf-cli --context local panel validate <dashboard-uid>/<panel-id> --ref-id A
 
 # quick datasource queries (uid or name)
 wode-gf-cli --context local query xyz-mysql --sql 'select 1'
+wode-gf-cli --context local query xyz-mysql --sql 'select ${__from:date:YYYYMMDD} as dt' --tz Asia/Shanghai
 wode-gf-cli --context local query my-prom --expr 'up'
 wode-gf-cli --context local query my-cls --query 'serviceType=logService' --query 'logServiceParams.Query=* | select trace_id limit 1' --query 'logServiceParams.TopicId=my-topic-id' --query 'logServiceParams.region=ap-shanghai' --query 'logServiceParams.SyntaxRule=1'
 
@@ -222,6 +224,7 @@ cat ./local/cls-query.json | wode-gf-cli --context local query my-cls --query-fi
 
 # render a panel image
 wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
+wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 --from '2026-08-18T08:00:00+08:00' --to '2026-08-18T23:59:59+08:00' --tz Asia/Shanghai -o local/panel.png
 
 # render a panel with Retina/HDPI output while keeping the same layout size
 wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 --width 1600 --height 900 --hdpi -o local/panel@2x.png
@@ -250,6 +253,13 @@ wode-gf-cli export -o local/grafana-export
 - `--expr`: quick expression query field (`expr`)
 - `--query path=value`: patch any field in query object (repeatable)
 - `--query-json` / `--query-file`: full query object passthrough
+- `--tz`: timezone for formatted `__from` / `__to` variables; defaults to `UTC`
+
+Time behavior:
+- Query and validate resolve absolute/relative input to epoch milliseconds before calling `/api/ds/query`.
+- Render converts ISO absolute time to epoch milliseconds, preserves epoch milliseconds and Grafana relative expressions such as `now-6h`, and rejects invalid absolute time.
+- Validate time formatter precedence is explicit `--tz`, then Dashboard timezone, then `UTC`.
+- Supported time variable formatters include `date`, `date:iso`, `date:seconds`, and validated Moment-style patterns such as `date:YYYYMMDD`.
 
 PromQL local checks:
 - `validate --syntax-only` runs local PromQL preflight only and does not call Grafana.

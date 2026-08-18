@@ -1,3 +1,5 @@
+import { formatGrafanaTimeVariable } from "../utils/resolve-time-to-ms";
+
 export type MacroContext = {
   from?: Date | number | string;
   to?: Date | number | string;
@@ -256,25 +258,7 @@ function formatInfinityTime(value: MacroContext["from"], format: string | undefi
   const date = value instanceof Date ? value : typeof value === "number" ? new Date(value) : new Date(value);
   if (Number.isNaN(date.getTime())) return typeof value === "string" ? value : undefined;
   if (!format) return String(date.getTime());
-  const parts = format.split(":");
-  if (parts[0]?.toLowerCase() !== "date") return String(date.getTime());
-  const dateFormat = parts.slice(1).join(":");
-  if (!dateFormat || dateFormat === "iso") return date.toISOString();
-  if (dateFormat === "seconds") return String(Math.floor(date.getTime() / 1000));
-  return formatDatePattern(date, dateFormat);
-}
-
-function formatDatePattern(date: Date, pattern: string): string {
-  const pad = (value: number, length = 2) => String(value).padStart(length, "0");
-  return pattern
-    .replaceAll("YYYY", String(date.getUTCFullYear()))
-    .replaceAll("MM", pad(date.getUTCMonth() + 1))
-    .replaceAll("DD", pad(date.getUTCDate()))
-    .replaceAll("HH", pad(date.getUTCHours()))
-    .replaceAll("hh", pad(date.getUTCHours()))
-    .replaceAll("mm", pad(date.getUTCMinutes()))
-    .replaceAll("ss", pad(date.getUTCSeconds()))
-    .replaceAll("SSS", pad(date.getUTCMilliseconds(), 3));
+  return formatGrafanaTimeVariable(date.getTime(), format, "UTC");
 }
 
 function customInterval(rangeMs: number | undefined, args: string[]): string | undefined {

@@ -33,6 +33,7 @@ export type GrafanaPromQLPreflightOptions = {
   intervalMs?: number;
   rateInterval?: string;
   rangeMs?: number;
+  timeZone?: string;
 };
 
 export type GrafanaPromQLPreflightResult = {

@@ -104,7 +104,7 @@ export type CliRuntime = {
     client: GrafanaClient,
     identifier: string,
     vars: Record<string, string | string[]>,
-  ) => Promise<{ uid: string }>;
+  ) => Promise<{ uid: string; name?: string; type?: string; jsonData?: JsonObject }>;
   parseJsonObjectOrThrow: (input: string, sourceLabel: string) => JsonObject;
   parseQueryAssignment: (expr: string) => { path: string; value: unknown };
   setPathValue: (target: Record<string, unknown>, pathExpr: string, value: unknown) => void;
@@ -127,6 +127,7 @@ export type CliRuntime = {
       datasourceTypes?: string[];
       skipTypes?: string[];
       vars: Record<string, string>;
+      timeZone?: string;
       promqlMacroMode?: GrafanaPromQLMacroMode;
     },
   ) => Promise<{ errors: ValidateIssue[]; warnings: ValidateIssue[] }>;

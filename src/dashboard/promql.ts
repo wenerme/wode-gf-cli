@@ -45,6 +45,7 @@ export function validatePanelTargetPromQLSyntax(
     toMs?: number;
     interval?: string;
     intervalMs?: number;
+    timeZone?: string;
     rateInterval?: string;
     rangeMs?: number;
     datasourceUid?: string;
@@ -63,6 +64,7 @@ export function validatePanelTargetPromQLSyntax(
       toMs: options.toMs,
       interval: options.interval,
       intervalMs: options.intervalMs,
+      timeZone: options.timeZone,
       rateInterval: options.rateInterval,
       rangeMs: options.rangeMs,
     });
@@ -148,6 +150,8 @@ export function buildValidateQueryBody(
     fromMs: number;
     toMs: number;
     intervalMs: number;
+    datasourceType?: string;
+    timeZone?: string;
   },
 ): JsonObject | undefined {
   const rawSql = asString(target.raw.rawSql) || asString(target.raw.rawQuery);
@@ -188,7 +192,10 @@ export function buildValidateQueryBody(
         intervalMs: options.intervalMs,
         maxDataPoints,
       };
-  return resolveTemplateValue(queryTemplate, queryVars) as JsonObject;
+  return resolveTemplateValue(queryTemplate, queryVars, {
+    datasourceType: options.datasourceType,
+    timeZone: options.timeZone,
+  }) as JsonObject;
 }
 
 export function matchesValidationTarget(

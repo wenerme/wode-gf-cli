@@ -194,6 +194,7 @@ wode-gf-cli --context local diff -i local/grafana-export-v2/dashboard-v2 --resou
 wode-gf-cli --context local validate ./grafana --concurrency 4 --var env=prod
 wode-gf-cli --context local validate ./grafana --concurrency 2 --timeout 60000
 wode-gf-cli --context local validate ./grafana --interval-ms 60000
+wode-gf-cli --context local validate ./grafana --tz Asia/Shanghai
 wode-gf-cli --context local validate ./grafana --syntax-only --promql-macro-mode keep
 
 # 隔离校验远端 panel 的单个 query
@@ -201,6 +202,7 @@ wode-gf-cli --context local panel validate <dashboard-uid>/<panel-id> --ref-id A
 
 # 快速数据源查询（uid 或 name）
 wode-gf-cli --context local query xyz-mysql --sql 'select 1'
+wode-gf-cli --context local query xyz-mysql --sql 'select ${__from:date:YYYYMMDD} as dt' --tz Asia/Shanghai
 wode-gf-cli --context local query my-prom --expr 'up'
 wode-gf-cli --context local query my-cls --query 'serviceType=logService' --query 'logServiceParams.Query=* | select trace_id limit 1' --query 'logServiceParams.TopicId=my-topic-id' --query 'logServiceParams.region=ap-shanghai' --query 'logServiceParams.SyntaxRule=1'
 
@@ -222,6 +224,7 @@ cat ./local/cls-query.json | wode-gf-cli --context local query my-cls --query-fi
 
 # 渲染 panel 图片
 wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 -o local/panel.png
+wode-gf-cli --context local render panel --dashboard-uid <uid> --panel-id 1 --from '2026-08-18T08:00:00+08:00' --to '2026-08-18T23:59:59+08:00' --tz Asia/Shanghai -o local/panel.png
 
 # 渲染 dashboard 图片
 wode-gf-cli --context local render dashboard --dashboard-uid <uid> -o local/dashboard.png
@@ -238,6 +241,14 @@ wode-gf-cli --context my-prod render panel --dashboard-uid <uid> --panel-id 1 --
 - `--expr`：快捷表达式查询字段（`expr`）
 - `--query path=value`：对 query 对象任意字段打补丁（可重复）
 - `--query-json` / `--query-file`：完整 query 对象透传
+- `--tz`：格式化 `__from` / `__to` 变量使用的时区，默认 `UTC`
+
+时间行为：
+
+- query 与 validate 在调用 `/api/ds/query` 前，将绝对时间或相对时间统一解析为 epoch 毫秒。
+- render 将 ISO 绝对时间转换为 epoch 毫秒，保留 epoch 毫秒及 `now-6h` 等 Grafana 相对表达式，并拒绝非法绝对时间。
+- validate 的 formatter 时区优先级为显式 `--tz`、Dashboard timezone、`UTC`。
+- 时间变量支持 `date`、`date:iso`、`date:seconds` 及经过校验的 Moment 风格格式，例如 `date:YYYYMMDD`。
 
 PromQL 本地检查：
 
