@@ -262,9 +262,15 @@ Time behavior:
 - Supported time variable formatters include `date`, `date:iso`, `date:seconds`, and validated Moment-style patterns such as `date:YYYYMMDD`.
 
 PromQL local checks:
-- `validate --syntax-only` runs local PromQL preflight only and does not call Grafana.
+- `validate --syntax-only` runs local PromQL preflight only, does not call Grafana, and does not need a configured URL.
 - `push` / `import` check PromQL before writing dashboards; use `--skip-promql-check` only when you need to bypass local syntax checks.
 - `--promql-macro-mode keep|preset|eval|strict` controls Grafana macro/template handling. Default `keep` accepts raw dashboard expressions. `preset` substitutes syntax-safe placeholders, `eval` uses `--var` / time context when available and warns on fallbacks, and `strict` rejects Grafana placeholders before parsing.
+
+Dashboard layout (local, offline; classic `gridPos` and v2 Tabs/Rows/Grid/AutoGrid):
+- `dashboard layout check [FILES|DIRS]` reports overlap, out-of-bounds, duplicate panel id, v2 missing/duplicate/orphan elements, and classic panels whose `panels[]` position disagrees with the row their `y` places them in (Grafana sorts by y/x before assigning rows). Exit 1 on errors, 2 on warnings.
+- `dashboard layout show FILE` prints the tab/row/panel tree with coordinates; `dashboard layout diff BASE CANDIDATE` lists moved/resized/added/removed/reparented panels (exit 1 when layout changed), useful to prove a query-only edit kept the layout.
+- `validate --layout warn|error|off` and `import`/`push --layout warn|error|off` run the same lint. Default `warn` only prints and keeps exit codes unchanged; `error` fails before any write.
+- `dashboard patch-file FILE` works on classic and v2 files (`--panel-id` maps to `spec.elements[*].spec.id` on v2), honors `--dry-run`, fails when an operation matches nothing (`--allow-no-match`), refuses patches that introduce new layout errors (`--allow-layout-errors`), supports `--forbid-layout-change`, and writes atomically only when content changed.
 
 Resource/API notes:
 - Alerting resources are available through `alert-rule`, `contact-point`, and `policy`; export/import can include `alert-rules,contact-points,policies`.

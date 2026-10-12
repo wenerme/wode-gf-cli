@@ -182,6 +182,8 @@ export async function validateAlertRules(
     intervalMs: number;
     maxDataPoints: number;
     vars: Record<string, string>;
+    /** Only run local expression-ref checks; do not call /api/ds/query. */
+    syntaxOnly?: boolean;
   },
 ) {
   const nowMs = Date.now();
@@ -201,6 +203,7 @@ export async function validateAlertRules(
   const refIssues = rules.flatMap((rule) =>
     validateAlertRuleExpressionRefs(rule).map((issue) => ({ rule: alertRuleTitle(rule), ...issue })),
   );
+  if (options.syntaxOnly) return { results, refIssues };
 
   for (const rule of rules) {
     const ruleName = alertRuleTitle(rule);

@@ -154,6 +154,39 @@ export function parseJsonPathValue(value: string): unknown {
   }
 }
 
+function parsePanelIds(panelId: string | undefined): string[] | undefined {
+  const text = String(panelId || "ALL").trim();
+  if (!text || text.toUpperCase() === "ALL") return undefined;
+  const ids = text
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (ids.length === 0) return undefined;
+  for (const id of ids) {
+    if (!/^\d+$/.test(id)) throw new Error(`Invalid --panel-id value: ${panelId}`);
+  }
+  return ids;
+}
+
+/**
+ * Resolve relative patch paths against panel objects.
+ * classic: `$..panels[?(@.id==N)].<path>`; v2: `$.spec.elements[?(@.spec.id==N)].spec.<path>`.
+ */
+export function panelScopedJsonPathsFor(
+  format: "classic" | "v2",
+  panelId: string | undefined,
+  pathExpr: string,
+  v2Root = "$",
+): string[] {
+  if (format === "classic") return panelScopedJsonPaths(panelId, pathExpr);
+  const path = pathExpr.trim();
+  if (!path) throw new Error("Missing patch path");
+  if (path.startsWith("$")) return [path];
+  const ids = parsePanelIds(panelId);
+  const selector = ids ? `?(${ids.map((id) => `@.spec.id==${id}`).join(" || ")})` : "*";
+  return [`${v2Root}.spec.elements[${selector}].spec.${path}`];
+}
+
 function parsePanelIdFilter(panelId: string | undefined) {
   const text = String(panelId || "ALL").trim();
   if (!text || text.toUpperCase() === "ALL") return "*";

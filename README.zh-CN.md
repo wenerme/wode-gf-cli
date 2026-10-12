@@ -252,9 +252,16 @@ wode-gf-cli --context my-prod render panel --dashboard-uid <uid> --panel-id 1 --
 
 PromQL 本地检查：
 
-- `validate --syntax-only` 只运行本地 PromQL 预检查，不调用 Grafana。
+- `validate --syntax-only` 只运行本地 PromQL 预检查，不调用 Grafana，也不需要配置 URL。
 - `push` / `import` 写入 dashboard 前会先检查 PromQL；仅在需要绕过本地语法检查时使用 `--skip-promql-check`。
 - `--promql-macro-mode keep|preset|eval|strict` 控制 Grafana 宏/模板处理。默认 `keep` 接受原始 dashboard 表达式；`preset` 使用语法安全占位值；`eval` 在可用时使用 `--var` / 时间上下文并对 fallback 给出 warning；`strict` 在解析前拒绝 Grafana placeholder。
+
+Dashboard 布局（本地离线；支持 classic `gridPos` 与 v2 Tabs/Rows/Grid/AutoGrid）：
+
+- `dashboard layout check [FILES|DIRS]` 检查重叠、越界、重复 panel id、v2 缺失/重复/孤立 element，以及 classic panel 在 `panels[]` 中的位置与其 `y` 所属 row 不一致的情况（Grafana 先按 y/x 排序再分配 row）。有 error 退出 1，仅 warning 退出 2。
+- `dashboard layout show FILE` 输出 tab/row/panel 树和坐标；`dashboard layout diff BASE CANDIDATE` 列出移动、改尺寸、新增、删除、换容器的 panel（布局变化时退出 1），可用于证明纯查询修改没有改布局。
+- `validate --layout warn|error|off` 与 `import`/`push --layout warn|error|off` 使用同一套检查。默认 `warn` 只打印、不改变退出码；`error` 在任何写入前失败。
+- `dashboard patch-file FILE` 支持 classic 与 v2 文件（v2 上 `--panel-id` 匹配 `spec.elements[*].spec.id`），遵守 `--dry-run`；任一操作零匹配时失败（`--allow-no-match` 放行）；拒绝引入新布局错误的补丁（`--allow-layout-errors` 放行）；支持 `--forbid-layout-change`；只有内容变化时才原子写入。
 
 资源/API 说明：
 

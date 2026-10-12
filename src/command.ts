@@ -29,7 +29,11 @@ ${formatRows([
 REVIEW
 ${formatRows([
   ["diff", "compare local export with current Grafana"],
-  ["validate", "validate dashboard queries via /api/ds/query"],
+  [
+    "validate",
+    "validate dashboard queries via /api/ds/query (+ local layout lint; --syntax-only needs no URL)",
+  ],
+  ["dashboard layout", "show FILE | check [FILES] | diff BASE CANDIDATE  (local, offline layout lint/diff)"],
   ["render", "render panel or dashboard PNG"],
   ["panel / p", "list DASH | get DASH/PANEL | inspect DASH/PANEL"],
 ])}
@@ -40,13 +44,20 @@ ${formatRows([
   ["import", "apply local JSON files/directories to Grafana"],
   ["patch", "patch one remote resource with path=value updates"],
   ["panel / p", "patch DASH/PANEL | edit DASH/PANEL | render DASH/PANEL"],
+  [
+    "dashboard patch-file",
+    "patch local JSON (classic or v2); honors --dry-run, fails on 0 matches/new layout errors",
+  ],
   ["delete", "delete one remote resource"],
   ["api", "escape hatch for unsupported Grafana APIs"],
 ])}
 
 RESOURCE COMMANDS
 ${formatRows([
-  ["dashboard / dash / d", "list | search <TERM> | get <ID> | move <ID> <FOLDER> | delete <ID>"],
+  [
+    "dashboard / dash / d",
+    "list | search <TERM> | get <ID> | move <ID> <FOLDER> | delete <ID> | patch-file <FILE> | layout show|check|diff",
+  ],
   ["connection / conn", "list | search <TERM> | get <ID> | delete <ID>"],
   [
     "folder",
@@ -78,6 +89,7 @@ WORKFLOW
 3. pull/edit      ${cliName} --context local pull local/dashboard.json
 4. review         ${cliName} --context local diff --resource dashboard -i local/dashboard.json --json
 5. validate       ${cliName} --context local validate ./grafana --concurrency 4
+   layout         ${cliName} dashboard layout check ./grafana   # after any panel add/move; layout diff A B for query-only edits
 6. dry-run        ${cliName} --context local --dry-run push local/dashboard.json
 7. apply          ${cliName} --context local push local/dashboard.json
 

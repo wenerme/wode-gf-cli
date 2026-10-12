@@ -1,21 +1,12 @@
-import fs from "node:fs";
-import path from "node:path";
 import type { Command } from "commander";
 import { GrafanaClient } from "../../client";
 import { asObject, asObjectArray, asString, getObjectField } from "../../lib/json-narrow";
-import { jsonPathRegex, jsonPathSet } from "../../lib/jsonpath-patch";
 import { CliName } from "../../schema";
 import type { CommandAppContext } from "../runtime";
+import { buildDashboardLayoutCommand } from "./build-dashboard-layout";
 import { attachScopedGetDelete, createScopedCommand, type ScopedResourceConfig } from "./build-scoped";
-import {
-  buildFolderMap,
-  collectVariadic,
-  type JsonObject,
-  panelScopedJsonPaths,
-  parseJsonPathValue,
-  printResourceRows,
-  selectResourceByToken,
-} from "./shared";
+import { attachDashboardPatchFile } from "./dashboard-patch-file";
+import { buildFolderMap, type JsonObject, printResourceRows, selectResourceByToken } from "./shared";
 
 export function buildDashboardCommand(app: CommandAppContext): Command {
   const entry: ScopedResourceConfig = {
@@ -28,81 +19,7 @@ export function buildDashboardCommand(app: CommandAppContext): Command {
   const { parseCommonOptions, fetchResources, resourceItems, selectResource, printMessage, printData } =
     app.runtime;
 
-  scoped
-    .command("patch-file <FILE>")
-    .alias("patch")
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .description("Patch local dashboard JSON file with JSONPath set/regex operations")
-    .option("--panel-id <ids>", "panel id filter for relative patch paths: ALL or comma-separated ids", "ALL")
-    .option("--set <jsonpath>", "set JSONPath value; value is the next token", collectVariadic, [])
-    .option(
-      "--regex <jsonpath>",
-      "regex replace JSONPath string values; pattern/replacement are next tokens",
-      collectVariadic,
-      [],
-    )
-    .option("--compact", "write compact json")
-    .option("--json", "print patch summary as json")
-    .action(function dashboardPatchFileAction(file: string, options) {
-      const command = this as unknown as Command;
-      const values = command.args.slice(1);
-      const setPaths = [...(options.set || [])].map((item: string[]) => item[0]);
-      const regexPaths = [...(options.regex || [])].map((item: string[]) => item[0]);
-      const operations: Array<
-        | { kind: "set"; path: string; value: unknown }
-        | { kind: "regex"; path: string; pattern: string; replacement: string }
-      > = [];
-      let valueIndex = 0;
-      for (let index = 0; index < setPaths.length; index += 1) {
-        const pathArg = setPaths[index];
-        const valueArg = values[valueIndex];
-        if (!pathArg || valueArg === undefined) throw new Error("--set requires <jsonpath> <value>");
-        for (const scopedPath of panelScopedJsonPaths(options.panelId, pathArg)) {
-          operations.push({ kind: "set", path: scopedPath, value: parseJsonPathValue(valueArg) });
-        }
-        valueIndex += 1;
-      }
-      for (let index = 0; index < regexPaths.length; index += 1) {
-        const pathArg = regexPaths[index];
-        const pattern = values[valueIndex];
-        const replacement = values[valueIndex + 1];
-        if (!pathArg || pattern === undefined || replacement === undefined) {
-          throw new Error("--regex requires <jsonpath> <pattern> <replacement>");
-        }
-        for (const scopedPath of panelScopedJsonPaths(options.panelId, pathArg)) {
-          operations.push({ kind: "regex", path: scopedPath, pattern, replacement });
-        }
-        valueIndex += 2;
-      }
-      if (valueIndex < values.length) {
-        throw new Error(`Unexpected extra patch arguments: ${values.slice(valueIndex).join(" ")}`);
-      }
-      if (operations.length === 0) throw new Error("No patch operation provided. Use --set or --regex.");
-
-      const resolvedFile = path.resolve(file);
-      const data = JSON.parse(fs.readFileSync(resolvedFile, "utf8"));
-      const results = operations.map((operation) => {
-        const result =
-          operation.kind === "set"
-            ? jsonPathSet(data, operation.path, operation.value)
-            : jsonPathRegex(data, operation.path, operation.pattern, operation.replacement);
-        return { ...operation, ...result };
-      });
-      fs.writeFileSync(resolvedFile, `${JSON.stringify(data, null, options.compact ? 0 : 2)}\n`, "utf8");
-      if (options.json) {
-        console.log(JSON.stringify({ file: resolvedFile, operations: results }, null, 2));
-        return;
-      }
-      printMessage(
-        parseCommonOptions(this as unknown as Command, { requireUrl: false }),
-        results
-          .map(
-            (result) => `${result.kind} ${result.path}: matched ${result.matched}, changed ${result.changed}`,
-          )
-          .join("\n"),
-      );
-    });
+  attachDashboardPatchFile(scoped, app);
 
   scoped
     .command("list")
@@ -239,6 +156,7 @@ export function buildDashboardCommand(app: CommandAppContext): Command {
       if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
     });
 
+  scoped.addCommand(buildDashboardLayoutCommand(app));
   attachScopedGetDelete(scoped, app, entry);
   return scoped;
 }

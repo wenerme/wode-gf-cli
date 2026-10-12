@@ -65,6 +65,11 @@ export async function validateDashboards(
   let datasourceTypesLoaded = false;
   let datasourceTypesPromise: Promise<void> | undefined;
   const loadDatasourceTypes = () => {
+    // Offline (no URL, e.g. --syntax-only): rely on types declared in the dashboard.
+    if (!ctx.url) {
+      datasourceTypesLoaded = true;
+      return Promise.resolve();
+    }
     datasourceTypesPromise ??= (async () => {
       for (const datasource of asObjectArray(await client.request<unknown[]>("GET", "/api/datasources"))) {
         const uid = asString(datasource.uid);

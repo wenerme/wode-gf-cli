@@ -4,6 +4,7 @@ import { ValidateOptionsSchema } from "../schema";
 import { normalizeGrafanaTimeZone, parsePositiveInt, parseSkipPanelIds, parseVarAssignments } from "../utils";
 import { validateAlertRules } from "./build-alert-ops";
 import type { CommandAppContext, ValidateIssue } from "./runtime";
+import { checkDashboardLayouts, parseLayoutMode, printLayoutIssues } from "./validate-layout";
 
 export function buildValidateCommand(app: CommandAppContext) {
   const { collectList, runtime } = app;
@@ -32,8 +33,10 @@ export function buildValidateCommand(app: CommandAppContext) {
     .option("--syntax-only", "only run local syntax checks; do not call Grafana /api/ds/query")
     .option("--promql-macro-mode <mode>", "PromQL Grafana macro handling: keep|preset|eval|strict", "keep")
     .option("--var <expr>", "variable override key=value, repeatable", collectList, [])
+    .option("--layout <mode>", "layout lint: warn (print only, default) | error (fail exit 1) | off", "warn")
     .action(async function validateAction(sources: string[] | undefined, options) {
-      const ctx = parseCommonOptions(this as unknown as Command);
+      const layoutMode = parseLayoutMode(options.layout);
+      const ctx = parseCommonOptions(this as unknown as Command, { requireUrl: !options.syntaxOnly });
       const sourceList = sources && sources.length > 0 ? sources : ["./grafana/"];
       const resolvedSources = sourceList.map((source) => path.resolve(source));
       const parsedOptions = ValidateOptionsSchema.parse({
@@ -85,6 +88,7 @@ export function buildValidateCommand(app: CommandAppContext) {
               intervalMs: parsedOptions.intervalMs,
               maxDataPoints: 1_000,
               vars: varOverrides,
+              syntaxOnly: parsedOptions.syntaxOnly,
             })
           : { results: [], refIssues: [] };
 
@@ -139,6 +143,9 @@ export function buildValidateCommand(app: CommandAppContext) {
         printMessage(ctx, `[${level}] AlertRule: ${result.rule} / refId=${result.refId} / ${result.message}`);
       }
 
+      const layout = checkDashboardLayouts(dashboards, layoutMode);
+      printLayoutIssues(ctx, layout, printMessage);
+
       const hasAlertErrors =
         alertValidation.refIssues.length > 0 ||
         alertValidation.results.some((item) => item.status === "error");
@@ -146,7 +153,7 @@ export function buildValidateCommand(app: CommandAppContext) {
         (item) => item.status === "no-data" || item.status === "skip",
       );
 
-      if (errors.length > 0 || hasAlertErrors) {
+      if (errors.length > 0 || hasAlertErrors || layout.errors > 0) {
         process.exitCode = 1;
         return;
       }

@@ -11,6 +11,7 @@ import {
 } from "../schema";
 import type { CommandAppContext, DiffItem } from "./runtime";
 import { fetchDashboardV2LocalSubset, parseDashboardApiMode, syncBundleResources } from "./sync/support";
+import { layoutPreflight, parseLayoutMode } from "./validate-layout";
 
 export function buildSyncCommands(app: CommandAppContext) {
   const { collectList, runtime } = app;
@@ -177,6 +178,11 @@ export function buildSyncCommands(app: CommandAppContext) {
     .option("--overwrite", "overwrite existing dashboards when importing", true)
     .option("--no-overwrite", "do not overwrite existing dashboards")
     .option("--skip-promql-check", "skip local PromQL syntax checks before importing dashboards")
+    .option(
+      "--layout <mode>",
+      "dashboard layout preflight: warn (default) | error (block write) | off",
+      "warn",
+    )
     .option("--promql-macro-mode <mode>", "PromQL Grafana macro handling: keep|preset|eval|strict", "keep")
     .action(async function importAction(sources: string[] | undefined, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
@@ -208,6 +214,15 @@ export function buildSyncCommands(app: CommandAppContext) {
         }
       }
 
+      if (resources.includes("dashboards")) {
+        layoutPreflight(
+          ctx,
+          collectDashboards(merged),
+          parseLayoutMode(options.layout),
+          "import",
+          printMessage,
+        );
+      }
       await importResources(ctx, merged, resources, { overwrite: options.overwrite });
       const importedCount = resources.reduce(
         (sum, resource) => sum + resourceItems(merged, resource).length,
@@ -240,6 +255,11 @@ export function buildSyncCommands(app: CommandAppContext) {
     .option("--overwrite", "overwrite existing dashboards when pushing", true)
     .option("--no-overwrite", "do not overwrite existing dashboards")
     .option("--skip-promql-check", "skip local PromQL syntax checks before pushing dashboards")
+    .option(
+      "--layout <mode>",
+      "dashboard layout preflight: warn (default) | error (block write) | off",
+      "warn",
+    )
     .option("--promql-macro-mode <mode>", "PromQL Grafana macro handling: keep|preset|eval|strict", "keep")
     .action(async function pushAction(sources: string[] | undefined, options) {
       const ctx = parseCommonOptions(this as unknown as Command);
@@ -271,6 +291,15 @@ export function buildSyncCommands(app: CommandAppContext) {
         }
       }
 
+      if (resources.includes("dashboards")) {
+        layoutPreflight(
+          ctx,
+          collectDashboards(merged),
+          parseLayoutMode(options.layout),
+          "push",
+          printMessage,
+        );
+      }
       await importResources(ctx, merged, resources, { overwrite: options.overwrite });
       const pushedCount = resources.reduce(
         (sum, resource) => sum + resourceItems(merged, resource).length,
