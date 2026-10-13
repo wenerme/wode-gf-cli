@@ -33,7 +33,7 @@ ${formatRows([
     "validate",
     "validate dashboard queries via /api/ds/query (+ local layout lint; --syntax-only needs no URL)",
   ],
-  ["dashboard layout", "show FILE | check [FILES] | diff BASE CANDIDATE  (local, offline layout lint/diff)"],
+  ["dashboard layout", "show FILE | check [FILES] | diff BASE CANDIDATE | fix [FILES]  (local, offline)"],
   ["render", "render panel or dashboard PNG"],
   ["panel / p", "list DASH | get DASH/PANEL | inspect DASH/PANEL"],
 ])}
@@ -56,7 +56,7 @@ RESOURCE COMMANDS
 ${formatRows([
   [
     "dashboard / dash / d",
-    "list | search <TERM> | get <ID> | move <ID> <FOLDER> | delete <ID> | patch-file <FILE> | layout show|check|diff",
+    "list | search <TERM> | get <ID> | move <ID> <FOLDER> | delete <ID> | patch-file <FILE> | layout show|check|diff|fix",
   ],
   ["connection / conn", "list | search <TERM> | get <ID> | delete <ID>"],
   [
@@ -89,7 +89,7 @@ WORKFLOW
 3. pull/edit      ${cliName} --context local pull local/dashboard.json
 4. review         ${cliName} --context local diff --resource dashboard -i local/dashboard.json --json
 5. validate       ${cliName} --context local validate ./grafana --concurrency 4
-   layout         ${cliName} dashboard layout check ./grafana   # after any panel add/move; layout diff A B for query-only edits
+   layout         ${cliName} dashboard layout check ./grafana   # after any panel add/move; layout fix to resolve; layout diff A B for query-only edits
 6. dry-run        ${cliName} --context local --dry-run push local/dashboard.json
 7. apply          ${cliName} --context local push local/dashboard.json
 

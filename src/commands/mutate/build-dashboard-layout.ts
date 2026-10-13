@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
+import { writeFileAtomic } from "../../core/atomic-write";
 import { checkLayout, type LayoutCheckResult } from "../../dashboard/layout/check";
 import { diffLayout, layoutFingerprint } from "../../dashboard/layout/diff";
+import { detectIndent, fixLayout, unsafeFix } from "../../dashboard/layout/fix";
 import { buildLayoutGraph, type LayoutGraph } from "../../dashboard/layout/graph";
 import { renderLayoutTree } from "../../dashboard/layout/show";
 import type { CommandAppContext } from "../runtime";
@@ -173,6 +175,83 @@ export function buildDashboardLayoutCommand(app: CommandAppContext): Command {
         if (diff.containers.reordered) console.log("reordered  containers");
       }
       if (diff.changed) process.exitCode = 1;
+    });
+
+  layout
+    .command("fix [sources...]")
+    .description(
+      "Rewrite gridPos to the positions Grafana actually renders (removes overlaps and negative y, sorts panels[]); never moves panels between rows/tabs",
+    )
+    .option("--json", "print results as json")
+    .action(function layoutFixAction(sources: string[] | undefined, options) {
+      const ctx = parseCommonOptions(this as unknown as Command, { requireUrl: false });
+      const files = collectJsonFiles(sources && sources.length > 0 ? sources : ["."]);
+      const results: Array<Record<string, unknown>> = [];
+      let failed = false;
+      for (const file of files) {
+        let original: string;
+        let doc: unknown;
+        try {
+          original = fs.readFileSync(file, "utf8");
+          doc = JSON.parse(original);
+        } catch {
+          continue;
+        }
+        const before = buildLayoutGraph(doc);
+        if (!before) continue;
+        const fixed = structuredClone(doc);
+        let outcome: ReturnType<typeof fixLayout>;
+        try {
+          outcome = fixLayout(fixed);
+        } catch (error) {
+          outcome = { changed: false, skipped: (error as Error).message };
+        }
+        const after = buildLayoutGraph(fixed) as LayoutGraph;
+        const reason = outcome.skipped ?? unsafeFix(before, after);
+        const remaining = checkLayout(after).issues.filter((issue) => issue.severity === "error");
+        let written = false;
+        let writeError: string | undefined;
+        if (!reason && outcome.changed && !ctx.dryRun) {
+          try {
+            writeFileAtomic(file, `${JSON.stringify(fixed, null, detectIndent(original))}\n`, original);
+            written = true;
+          } catch (error) {
+            writeError = (error as Error).message;
+          }
+        }
+        const skipped = reason ?? writeError;
+        if (skipped || remaining.length > 0) failed = true;
+        if (!outcome.changed && !skipped && remaining.length === 0) continue;
+        results.push({
+          file: relative(file),
+          changed: outcome.changed && !skipped,
+          written,
+          skipped,
+          changes: reason ? [] : diffLayout(before, after).items,
+          remainingErrors: (reason ? checkLayout(before) : checkLayout(after)).issues
+            .filter((issue) => issue.severity === "error")
+            .map((issue) => `${issue.code}: ${issue.message}`),
+        });
+      }
+      if (options.json || ctx.output === "json") {
+        console.log(JSON.stringify({ dryRun: ctx.dryRun, results }, null, 2));
+      } else {
+        for (const result of results) {
+          const state = result.skipped ? "SKIP" : ctx.dryRun ? "PLAN" : result.written ? "FIXED" : "OK";
+          console.log(`[${state}] ${result.file}${result.skipped ? `: ${result.skipped}` : ""}`);
+          for (const change of result.changes as Array<Record<string, string>>) {
+            const title = change.title ? ` "${change.title}"` : "";
+            console.log(`  ${change.change.padEnd(8)} ${change.key}${title}  ${change.from} -> ${change.to}`);
+          }
+          for (const error of result.remainingErrors as string[]) console.log(`  still: ${error}`);
+        }
+        const changedCount = results.filter((r) => r.changed).length;
+        const skippedCount = results.filter((r) => r.skipped).length;
+        console.log(
+          `${ctx.dryRun ? "[DRY-RUN] " : ""}${changedCount} dashboards ${ctx.dryRun ? "would change" : "fixed"}, ${skippedCount} skipped`,
+        );
+      }
+      if (failed) process.exitCode = 1;
     });
 
   return layout;

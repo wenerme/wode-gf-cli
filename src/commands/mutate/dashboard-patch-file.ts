@@ -1,7 +1,7 @@
-import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
+import { writeFileAtomic } from "../../core/atomic-write";
 import { checkLayout, type LayoutIssue } from "../../dashboard/layout/check";
 import { diffLayout, layoutFingerprint } from "../../dashboard/layout/diff";
 import { buildLayoutGraph } from "../../dashboard/layout/graph";
@@ -69,26 +69,6 @@ function parseOperations(command: Command, options: Record<string, unknown>, doc
   }
   if (operations.length === 0) throw new Error("No patch operation provided. Use --set or --regex.");
   return operations;
-}
-
-function writeAtomic(file: string, content: string, expectedOriginal: string) {
-  // Resolve symlinks so rename replaces the target, not the link.
-  const target = fs.realpathSync(file);
-  if (fs.readFileSync(target, "utf8") !== expectedOriginal) {
-    throw new Error(`${file} changed on disk while patching; re-run against the latest content`);
-  }
-  const temp = path.join(
-    path.dirname(target),
-    `.${path.basename(target)}.${randomBytes(6).toString("hex")}.tmp`,
-  );
-  // `wx` refuses to follow or truncate a pre-existing file/symlink at the temp path.
-  fs.writeFileSync(temp, content, { encoding: "utf8", mode: fs.statSync(target).mode, flag: "wx" });
-  try {
-    fs.renameSync(temp, target);
-  } catch (error) {
-    fs.rmSync(temp, { force: true });
-    throw error;
-  }
 }
 
 export function attachDashboardPatchFile(scoped: Command, app: CommandAppContext) {
@@ -193,7 +173,7 @@ export function attachDashboardPatchFile(scoped: Command, app: CommandAppContext
       const changed = JSON.stringify(before) !== JSON.stringify(data);
       const write = failures.length === 0 && changed && !ctx.dryRun;
       if (write)
-        writeAtomic(resolvedFile, `${JSON.stringify(data, null, options.compact ? 0 : 2)}\n`, original);
+        writeFileAtomic(resolvedFile, `${JSON.stringify(data, null, options.compact ? 0 : 2)}\n`, original);
 
       const summary = {
         file: resolvedFile,

@@ -260,6 +260,7 @@ Dashboard 布局（本地离线；支持 classic `gridPos` 与 v2 Tabs/Rows/Grid
 
 - `dashboard layout check [FILES|DIRS]` 检查重叠、越界、重复 panel id、v2 缺失/重复/孤立 element，以及 classic panel 在 `panels[]` 中的位置与其 `y` 所属 row 不一致的情况（Grafana 先按 y/x 排序再分配 row）。有 error 退出 1，仅 warning 退出 2。
 - `dashboard layout show FILE` 输出 tab/row/panel 树和坐标；`dashboard layout diff BASE CANDIDATE` 列出移动、改尺寸、新增、删除、换容器的 panel（布局变化时退出 1），可用于证明纯查询修改没有改布局。
+- `dashboard layout fix [FILES|DIRS]` 把坐标改写为 Grafana 实际渲染的位置（按 row/grid 做 react-grid-layout 垂直压紧）：重叠的往下推，负 `y` 改为 0，并按 row 重排 `panels[]`。只修有错误的 grid，不会把 panel 移到别的 row 或 tab，遇到歧义布局会跳过。可用 `--dry-run` 预览。
 - `validate --layout warn|error|off` 与 `import`/`push --layout warn|error|off` 使用同一套检查。默认 `warn` 只打印、不改变退出码；`error` 在任何写入前失败。
 - `dashboard patch-file FILE` 支持 classic 与 v2 文件（v2 上 `--panel-id` 匹配 `spec.elements[*].spec.id`），遵守 `--dry-run`；任一操作零匹配时失败（`--allow-no-match` 放行）；拒绝引入新布局错误的补丁（`--allow-layout-errors` 放行）；支持 `--forbid-layout-change`；只有内容变化时才原子写入。
 

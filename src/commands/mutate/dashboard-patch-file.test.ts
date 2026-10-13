@@ -371,6 +371,70 @@ describe("validate layout integration", () => {
 });
 
 describe("dashboard layout check command", () => {
+  it("fix does not write skipped files and exits 1", async () => {
+    const file = write("ambiguous.json", {
+      ...classicDoc,
+      dashboard: {
+        ...classicDoc.dashboard,
+        panels: [
+          {
+            id: 9,
+            type: "row",
+            title: "R",
+            collapsed: true,
+            panels: [],
+            gridPos: { x: 0, y: 0, w: 24, h: 1 },
+          },
+          { id: 1, type: "timeseries", title: "A", gridPos: { x: 0, y: 1, w: 24, h: 8 } },
+          { id: 2, type: "timeseries", title: "B", gridPos: { x: 0, y: 2, w: 24, h: 8 } },
+        ],
+      },
+    });
+    const before = fs.readFileSync(file, "utf8");
+    await run(["dashboard", "layout", "fix", file, "--json"]);
+    expect(process.exitCode).toBe(1);
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    expect(JSON.parse(output.join("\n")).results[0].skipped).toContain("collapsed row");
+  });
+
+  it("fix keeps 4-space indentation", async () => {
+    const file = path.join(dir, "indent.json");
+    const doc = {
+      ...classicDoc,
+      dashboard: {
+        ...classicDoc.dashboard,
+        panels: [
+          classicDoc.dashboard.panels[0],
+          { ...classicDoc.dashboard.panels[1], gridPos: { x: 6, y: 0, w: 12, h: 8 } },
+        ],
+      },
+    };
+    fs.writeFileSync(file, `${JSON.stringify(doc, null, 4)}\n`);
+    await run(["dashboard", "layout", "fix", file]);
+    expect(fs.readFileSync(file, "utf8")).toMatch(/^\{\n {4}"uid"/);
+  });
+
+  it("fix --dry-run reports a plan without writing, then fix writes", async () => {
+    const file = write("classic.json", {
+      ...classicDoc,
+      dashboard: {
+        ...classicDoc.dashboard,
+        panels: [
+          classicDoc.dashboard.panels[0],
+          { ...classicDoc.dashboard.panels[1], gridPos: { x: 6, y: 0, w: 12, h: 8 } },
+        ],
+      },
+    });
+    const before = fs.readFileSync(file, "utf8");
+    await run(["--dry-run", "dashboard", "layout", "fix", file, "--json"]);
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    expect(JSON.parse(output.join("\n")).results[0].changed).toBe(true);
+    await run(["dashboard", "layout", "fix", file]);
+    expect(process.exitCode).toBeUndefined();
+    const fixed = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(fixed.dashboard.panels[1].gridPos).toEqual({ x: 6, y: 8, w: 12, h: 8 });
+  });
+
   it("exits 1 with overlap details", async () => {
     write("classic.json", {
       ...classicDoc,
