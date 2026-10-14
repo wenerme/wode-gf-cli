@@ -283,11 +283,12 @@ Dashboard 布局（本地离线；支持 classic `gridPos` 与 v2 Tabs/Rows/Grid
 资源/API 说明：
 
 - Alerting 资源可通过 `alert-rule`、`contact-point`、`policy` 管理；export/import 可包含 `alert-rules,contact-points,policies`。
-- `alert-rule state [RULES]` 显示运行态 state/health、最近评估时间、firing/pending 数和 lastError。过滤：`--state`、`--health`、`--folder`、`--group`、`--matcher`（rule labels）、`--instance-matcher`、`--paused`；`--instances` 附带告警实例；`--fail-on firing,pending,recovering,error,nodata` 命中时退出 1。
-- `alert-rule history <RULE>` 列出状态变迁（`--from` 默认 `now-24h`、`--to`、`--limit`、`--label k=v`）。annotation 历史后端在服务端忽略 label 过滤，因此本地会再过滤一次。
+- `alert-rule state [RULES]` 显示运行态 state/health、最近评估时间、firing/pending 数和 lastError。过滤：`--state`、`--health`、`--folder`、`--group`、`--matcher`（rule labels）、`--instance-matcher`、`--paused`；`--instances` 附带告警实例；`--fail-on firing,pending,recovering,error,nodata` 命中时退出 2（退出 1 表示命令本身失败，rule 列表被截断也算）。`--state` 只接受 rule 状态，error/nodata 请用 `--health`。带 `--instance-matcher` 时，计数和 `--fail-on` 只看匹配到的实例。
+- `alert-rule history <RULE>` 列出状态变迁（`--from` 默认 `now-24h`、`--to`、`--limit`、`--label k=v`）。默认的 annotation 历史后端会忽略 label 过滤，且最多返回 100 条变迁；过滤在本地完成，结果被截断时会标记 `truncated`。
 - `alert list`（别名 `alerts`）列出 Alertmanager 活跃实例；默认隐藏 silenced/inhibited，可用 `--silenced`/`--inhibited` 显示。
 - `silence list [--all] | create | expire <ID>` 管理静默。matcher 语法为 `k=v`、`k!=v`、`k=~re`、`k!~re`；`create` 拒绝零 matcher 或所有 matcher 都匹配空值的组合。`createdBy` 默认为当前 Grafana 登录名。
-- `alert-rule pause|resume <RULES...>` 以读-改-写方式切换 `isPaused`（服务端无版本前置条件），已处于目标状态则跳过，写后回读校验，且不改变 provenance。所有写操作都支持 `--dry-run`。
+- `alert-rule pause|resume <RULES...>` 只切换 `isPaused`，已处于目标状态则跳过，写后回读校验，且不改变 provenance。所有写操作都支持 `--dry-run`。
+- 单条 rule 的写入（`pause`/`resume`、`versions restore`）会保持组内规则顺序：Grafana 的单条 provisioning PUT 会丢掉组内序号，所以组内没有 provisioned rule 时，改为像 Grafana UI 一样经 ruler API 整组提交（组内每条 rule 的版本号都会 +1）。组内有 provisioned rule 时退回 PUT，若顺序被改会提示并退出 2。
 - `api <path|url>` 是原始 Grafana API 逃生口，使用当前 context 认证，支持 `-X`、`-H`、`--query`、`-f`、`--json`、`-d`、`--data-file`、`-i`、`--raw`、`--fail`、`-o`。
 
 ## 导入单个 JSON

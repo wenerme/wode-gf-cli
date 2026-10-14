@@ -7,8 +7,8 @@ import { asObject, asObjectArray, asString, getObjectField } from "./json-narrow
  * Content is presented in the provisioning shape (`/api/v1/provisioning/alert-rules/:uid`), the same shape
  * export/import use, so a version can be diffed against or written back as a local file.
  *
- * There is no restore endpoint and no client precondition on provisioning PUT. Restore therefore re-reads the
- * rule version immediately before writing and verifies the readback; the remaining window is one round-trip.
+ * There is no restore endpoint and no client precondition on rule writes; see alert-rule-write.ts for how a single
+ * rule is written without reordering its group.
  */
 export type AlertRuleVersion = {
   version: number;
@@ -107,37 +107,4 @@ export async function getAlertRuleVersion(
   const hit = (await listAlertRuleVersions(client, uid)).find((item) => item.version === version);
   if (!hit) throw new Error(`Alert rule ${uid} has no version ${version}`);
   return hit;
-}
-
-/**
- * Writes `target` over `current` in place (current folder/group are kept). Provenance is preserved: rules without
- * provenance are written with `X-Disable-Provenance`, `api` rules without it; file-provisioned rules are refused.
- */
-export async function writeAlertRuleVersion(
-  client: GrafanaClient,
-  current: AlertRuleVersion,
-  target: JsonObject,
-): Promise<AlertRuleVersion> {
-  const uid = asString(current.rule.uid) as string;
-  // The versions list omits provenance; the single-rule GET carries it.
-  const latest = await getCurrentAlertRule(client, uid);
-  if (latest.version !== current.version) {
-    throw new Error(
-      `Alert rule ${uid} changed after version ${current.version} was read (now ${latest.version}); re-run to review`,
-    );
-  }
-  if (latest.provenance && latest.provenance !== "api") {
-    throw new Error(`Alert rule ${uid} is provisioned from ${latest.provenance}; change it at the source`);
-  }
-  const body = { ...target, uid, folderUID: current.rule.folderUID, ruleGroup: current.rule.ruleGroup };
-  // Grafana answers 409 provenanceMismatch when the header does not match the stored provenance.
-  const headers: Record<string, string> = latest.provenance ? {} : { "X-Disable-Provenance": "true" };
-  await client.request(
-    "PUT",
-    `/api/v1/provisioning/alert-rules/${encodeURIComponent(uid)}`,
-    body,
-    [200],
-    headers,
-  );
-  return getCurrentAlertRule(client, uid);
 }

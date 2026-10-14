@@ -2,7 +2,10 @@ import { asObject, asObjectArray, asString } from "./json-narrow";
 
 export type JsonObject = Record<string, unknown>;
 
-/** Rule-level states accepted by `state=` on the Prometheus-compatible rules API (api_prometheus.go). */
+/**
+ * Rule-level states for `state=`. The API also accepts nodata/error, but filterRulesByState drops them for
+ * rules (api_prometheus.go), so they always return nothing; health filters cover those.
+ */
 export const RuleStateFilters = [
   "firing",
   "alerting",
@@ -10,8 +13,6 @@ export const RuleStateFilters = [
   "inactive",
   "normal",
   "recovering",
-  "nodata",
-  "error",
 ] as const;
 /** Health values accepted by `health=` (api_prometheus.go GetHealthFromQuery). */
 export const RuleHealthFilters = ["ok", "error", "nodata", "unknown"] as const;
@@ -108,7 +109,10 @@ function ruleCounts(totals: Record<string, number>): Record<string, number> {
 }
 
 /** Decode `GET /api/prometheus/grafana/api/v1/rules` into flat rule rows. */
-export function decodePrometheusRules(response: unknown): RulesPage {
+export function decodePrometheusRules(
+  response: unknown,
+  options: { filteredTotals?: boolean } = {},
+): RulesPage {
   const body = asObject(response);
   if (!body) throw new Error("Rules response is not an object");
   if (body.status === "error") {
@@ -137,7 +141,8 @@ export function decodePrometheusRules(response: unknown): RulesPage {
         lastEvaluation: evaluatedAt(rule.lastEvaluation),
         evaluationTime: typeof rule.evaluationTime === "number" ? rule.evaluationTime : undefined,
         interval,
-        counts: ruleCounts(numberRecord(rule.totals)),
+        // With instance matchers only totalsFiltered reflects the matched instances (api_prometheus.go).
+        counts: ruleCounts(numberRecord(options.filteredTotals ? (rule.totalsFiltered ?? {}) : rule.totals)),
         labels: stringRecord(rule.labels),
         instances: alerts?.map((alert) => ({
           state: asString(alert.state) || "unknown",
@@ -151,7 +156,9 @@ export function decodePrometheusRules(response: unknown): RulesPage {
   return { rules, nextToken: asString(data?.groupNextToken) };
 }
 
-export function ruleMatchesFailOn(rule: RuleRuntime, failOn: FailOn): boolean {
+export function ruleMatchesFailOn(rule: RuleRuntime, failOn: FailOn, countsOnly = false): boolean {
+  // With instance matchers the rule-level state describes all instances; only filtered counts apply.
+  if (countsOnly) return (rule.counts[failOn] ?? 0) > 0;
   if (failOn === "firing") return rule.state === "firing" || rule.counts.firing > 0;
   if (failOn === "pending") return rule.state === "pending" || rule.counts.pending > 0;
   if (failOn === "recovering") return rule.state === "recovering" || rule.counts.recovering > 0;
@@ -159,9 +166,9 @@ export function ruleMatchesFailOn(rule: RuleRuntime, failOn: FailOn): boolean {
   return rule.health === "nodata" || rule.counts.nodata > 0;
 }
 
-export function failingRules(rules: RuleRuntime[], failOn: FailOn[]): RuleRuntime[] {
+export function failingRules(rules: RuleRuntime[], failOn: FailOn[], countsOnly = false): RuleRuntime[] {
   if (failOn.length === 0) return [];
-  return rules.filter((rule) => failOn.some((item) => ruleMatchesFailOn(rule, item)));
+  return rules.filter((rule) => failOn.some((item) => ruleMatchesFailOn(rule, item, countsOnly)));
 }
 
 // ---------- state history ----------
@@ -271,6 +278,13 @@ export function parseLabelFilters(values: string[] | undefined): Record<string, 
 }
 
 /** Client-side label filter, sort newest first, then limit. Annotation backend ignores label filters. */
+/** The annotation history backend ignores `limit` and returns at most 100 rows (annotationsimpl default). */
+export const AnnotationHistoryCap = 100;
+
+export function historyTruncated(rows: HistoryRow[]): boolean {
+  return rows.length >= AnnotationHistoryCap && rows.some((row) => row.text !== undefined);
+}
+
 export function selectHistoryRows(
   rows: HistoryRow[],
   options: { labels: Record<string, string>; limit: number },
@@ -350,36 +364,6 @@ export function selectActiveAlerts(
     return true;
   });
   return { alerts: kept, hiddenSilenced, hiddenInhibited };
-}
-
-// ---------- pause / resume ----------
-
-export type PauseUpdate = {
-  changed: boolean;
-  from: boolean;
-  to: boolean;
-  provenance: string;
-  body: JsonObject;
-  headers: Record<string, string>;
-};
-
-/**
- * Build a provisioning PUT that only flips isPaused and keeps provenance unchanged:
- * - stored provenance none: send `X-Disable-Provenance` (without it Grafana promotes the rule to `api`)
- * - stored provenance set (e.g. `api`): omit the header (with it Grafana answers 409 provenanceMismatch)
- */
-export function buildPauseUpdate(rule: JsonObject, paused: boolean): PauseUpdate {
-  const from = rule.isPaused === true;
-  const provenance = asString(rule.provenance) || "";
-  const { provenance: _provenance, ...rest } = rule;
-  return {
-    changed: from !== paused,
-    from,
-    to: paused,
-    provenance,
-    body: { ...rest, isPaused: paused },
-    headers: provenance ? {} : { "X-Disable-Provenance": "true" },
-  };
 }
 
 // ---------- formatting ----------

@@ -56,6 +56,14 @@ export function printChanges(
 
 export { diffJson };
 
+export function wantsJson(ctx: CliContext, options: { json?: boolean }) {
+  return Boolean(options.json) || ctx.output === "json";
+}
+
+export function printJson(value: unknown) {
+  console.log(JSON.stringify(value, null, 2));
+}
+
 export function shortTime(value?: string): string {
   if (!value) return "";
   const date = new Date(value);

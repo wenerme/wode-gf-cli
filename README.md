@@ -290,11 +290,12 @@ Versions (dashboard and alert rule config history):
 
 Resource/API notes:
 - Alerting resources are available through `alert-rule`, `contact-point`, and `policy`; export/import can include `alert-rules,contact-points,policies`.
-- `alert-rule state [RULES]` shows runtime state/health, last evaluation, firing/pending counts, and last error. Filters: `--state`, `--health`, `--folder`, `--group`, `--matcher` (rule labels), `--instance-matcher`, `--paused`; `--instances` adds alert instances; `--fail-on firing,pending,recovering,error,nodata` exits 1 on a match.
-- `alert-rule history <RULE>` lists state transitions (`--from` default `now-24h`, `--to`, `--limit`, `--label k=v`). The annotation history backend ignores label filters server-side, so they are also applied locally.
+- `alert-rule state [RULES]` shows runtime state/health, last evaluation, firing/pending counts, and last error. Filters: `--state`, `--health`, `--folder`, `--group`, `--matcher` (rule labels), `--instance-matcher`, `--paused`; `--instances` adds alert instances; `--fail-on firing,pending,recovering,error,nodata` exits 2 on a match (1 = the command failed, including a truncated rule list). `--state` takes rule states only; use `--health error|nodata` for those. With `--instance-matcher`, counts and `--fail-on` use only the matched instances.
+- `alert-rule history <RULE>` lists state transitions (`--from` default `now-24h`, `--to`, `--limit`, `--label k=v`). The default annotation history backend ignores label filters and returns at most 100 transitions; filters are applied locally and a capped result is flagged `truncated`.
 - `alert list` (alias `alerts`) lists active Alertmanager instances; silenced/inhibited ones are hidden unless `--silenced`/`--inhibited`.
 - `silence list [--all] | create | expire <ID>` manages silences. Matchers use `k=v`, `k!=v`, `k=~re`, `k!~re`; `create` refuses zero matchers or sets where every matcher matches the empty string. `createdBy` defaults to the current Grafana login.
-- `alert-rule pause|resume <RULES...>` flips `isPaused` via read-modify-write (no server-side precondition), skips rules already in that state, verifies by readback, and keeps provenance unchanged. All writes honor `--dry-run`.
+- `alert-rule pause|resume <RULES...>` flips `isPaused` only, skips rules already in that state, verifies by readback, and keeps provenance. All writes honor `--dry-run`.
+- Single-rule writes (`pause`/`resume`, `versions restore`) keep the order of rules in the group: Grafana's single-rule provisioning PUT drops the group index, so groups without provisioned rules are re-submitted through the ruler API like the Grafana UI does (this bumps the version of every rule in the group). Groups containing provisioned rules fall back to the PUT, and a reorder is reported with exit 2.
 - `api <path|url>` is a raw Grafana API escape hatch using the active context auth. It supports `-X`, `-H`, `--query`, `-f`, `--json`, `-d`, `--data-file`, `-i`, `--raw`, `--fail`, and `-o`.
 
 ## Single JSON Import

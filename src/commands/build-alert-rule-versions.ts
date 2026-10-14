@@ -10,8 +10,8 @@ import {
   getCurrentAlertRule,
   listAlertRuleVersions,
   resolveAlertRuleUid,
-  writeAlertRuleVersion,
 } from "../lib/alert-rule-versions";
+import { orderChanged, writeAlertRule } from "../lib/alert-rule-write";
 import { asObject, asString } from "../lib/json-narrow";
 import type { CommandAppContext } from "./runtime";
 import {
@@ -143,7 +143,7 @@ export function buildAlertRuleVersionsCommand(app: CommandAppContext): Command {
   versions
     .command("restore <UID> <VERSION>")
     .description(
-      "Write an old version back in place (current folder/group kept, provenance preserved). Grafana has no write precondition for rules: the version is re-checked right before the PUT; honors --dry-run",
+      "Write an old version back in place: current folder/group, group order and provenance are kept. Grafana has no write precondition for rules; the version is re-checked right before writing. Honors --dry-run",
     )
     .option("--expect-version <n>", "abort unless the current version is N (what you reviewed)")
     .option("--json", "print result as json")
@@ -202,30 +202,31 @@ export function buildAlertRuleVersionsCommand(app: CommandAppContext): Command {
           console.log(JSON.stringify({ ...base, action: "plan", dryRun: true, diff: changes }, null, 2));
         return;
       }
-      const after = await writeAlertRuleVersion(client, current, target.rule);
+      const written = await writeAlertRule(client, uid, expected, current.version);
+      const after = written.rule;
       const residual = diffJson(comparableAlertRule(expected), comparableAlertRule(after.rule));
-      if (json)
-        console.log(
-          JSON.stringify(
-            {
-              ...base,
-              action: "restored",
-              readback: after.version,
-              residual: residual.length,
-              diff: changes,
-            },
-            null,
-            2,
-          ),
-        );
+      const reordered = orderChanged(written);
+      const outcome = {
+        ...base,
+        action: "restored",
+        via: written.path,
+        readback: after.version,
+        residual: residual.length,
+        reordered,
+      };
+      if (json) console.log(JSON.stringify({ ...outcome, diff: changes }, null, 2));
       else {
-        print(`Restored as v${after.version}.`);
+        print(`Restored as v${after.version} (via ${written.path}).`);
         if (residual.length > 0)
           print(
             `[WARN] readback differs in ${residual.length} path(s): ${residual.map((c) => c.path).join(", ")}`,
           );
+        if (reordered)
+          print(
+            `[WARN] Grafana reordered group ${String(current.rule.ruleGroup)}: ${written.orderBefore.join(",")} -> ${written.orderAfter.join(",")} (provisioned group; single-rule PUT drops the index)`,
+          );
       }
-      if (residual.length > 0 || after.version !== current.version + 1) process.exitCode = 2;
+      if (residual.length > 0 || reordered || after.version !== current.version + 1) process.exitCode = 2;
     });
 
   return versions;

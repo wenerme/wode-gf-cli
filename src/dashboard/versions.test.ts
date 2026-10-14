@@ -214,7 +214,7 @@ describe("dashboard versions over HTTP", () => {
   });
 
   it("writes v2 with the current resourceVersion, target spec and an explicit message", async () => {
-    serve((url, init) =>
+    serve((_url, init) =>
       init?.method === "PUT" ? { status: 200, body: { metadata: { generation: 6 } } } : undefined,
     );
     const current = {

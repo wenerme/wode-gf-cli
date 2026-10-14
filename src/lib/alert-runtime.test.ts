@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildPauseUpdate,
   decodeAlertmanagerAlerts,
   decodeHistoryFrame,
   decodePrometheusRules,
@@ -109,11 +108,28 @@ describe("decodePrometheusRules", () => {
     expect(failingRules(rules, [])).toEqual([]);
   });
 
-  it("validates filter choices", () => {
+  it("validates filter choices; rule state filters exclude error/nodata (Grafana ignores them for rules)", () => {
     expect(
-      validateChoices(splitListValues(["Firing,pending", "error"]), RuleStateFilters, "--state"),
-    ).toEqual(["firing", "pending", "error"]);
+      validateChoices(splitListValues(["Firing,pending", "inactive"]), RuleStateFilters, "--state"),
+    ).toEqual(["firing", "pending", "inactive"]);
     expect(() => validateChoices(["bogus"], RuleStateFilters, "--state")).toThrow("Invalid --state value");
+    expect(() => validateChoices(["error"], RuleStateFilters, "--state")).toThrow("Invalid --state value");
+  });
+
+  it("uses totalsFiltered for counts when instance matchers are applied", () => {
+    const response = {
+      status: "success",
+      data: {
+        groups: [
+          {
+            name: "g",
+            rules: [{ uid: "r", name: "R", state: "firing", totals: { alerting: 2 }, totalsFiltered: {} }],
+          },
+        ],
+      },
+    };
+    expect(decodePrometheusRules(response).rules[0]?.counts.firing).toBe(2);
+    expect(decodePrometheusRules(response, { filteredTotals: true }).rules[0]?.counts.firing).toBe(0);
   });
 });
 
@@ -253,7 +269,12 @@ describe("matchers and silences", () => {
     });
     expect(parseLabelMatcher("team=")).toMatchObject({ value: "" });
     expect(() => parseLabelMatcher("team")).toThrow("Invalid matcher");
-    expect(() => parseLabelMatcher("env=~(")).toThrow("Invalid regex");
+    // Regexes are Go RE2: JS-unparseable ones are left for the server to validate, not rejected locally.
+    expect(parseLabelMatcher("env=~(")).toMatchObject({ value: "(", isRegex: true });
+    expect(matcherMatchesEmpty(parseLabelMatcher("env=~("))).toBe(false);
+    // RE2's (?i) prefix is translated, so the empty-match guard still sees through it.
+    expect(matcherMatchesEmpty(parseLabelMatcher("team=~(?i).*"))).toBe(true);
+    expect(matcherMatchesEmpty(parseLabelMatcher("team=~(?i)SRE"))).toBe(false);
     expect(formatMatcher(parseLabelMatcher('a=x"y'))).toBe('a="x\\"y"');
   });
 
@@ -322,29 +343,6 @@ describe("matchers and silences", () => {
     expect(formatMatcher(all[0]?.matchers[0] ?? { name: "", value: "", isRegex: false, isEqual: true })).toBe(
       'b!~"x.*"',
     );
-  });
-});
-
-describe("buildPauseUpdate", () => {
-  const rule = { uid: "r1", title: "R1", isPaused: false, ruleGroup: "g1" };
-
-  it("flips isPaused and disables provenance for rules without provenance", () => {
-    const update = buildPauseUpdate(rule, true);
-    expect(update).toMatchObject({ changed: true, from: false, to: true, provenance: "" });
-    expect(update.body).toEqual({ ...rule, isPaused: true });
-    expect(update.headers).toEqual({ "X-Disable-Provenance": "true" });
-  });
-
-  it("keeps stored provenance by omitting the header and dropping the read-only field", () => {
-    const update = buildPauseUpdate({ ...rule, provenance: "api" }, true);
-    expect(update.provenance).toBe("api");
-    expect(update.headers).toEqual({});
-    expect(update.body).not.toHaveProperty("provenance");
-  });
-
-  it("reports unchanged when already in target state", () => {
-    expect(buildPauseUpdate({ ...rule, isPaused: true }, true).changed).toBe(false);
-    expect(buildPauseUpdate(rule, false).changed).toBe(false);
   });
 });
 

@@ -21,15 +21,19 @@ export function parseLabelMatcher(input: string): LabelMatcher {
     isRegex: op === "=~" || op === "!~",
     isEqual: op === "=" || op === "=~",
   };
-  if (matcher.isRegex) compileAnchored(matcher.value, input);
   return matcher;
 }
 
-function compileAnchored(pattern: string, source: string): RegExp {
+/**
+ * Alertmanager regexes are Go RE2, anchored. JS covers the common subset; a leading `(?i)` is translated.
+ * Returns undefined when JS cannot compile it: the server validates the regex (and the empty-match rule) itself.
+ */
+function compileAnchored(pattern: string): RegExp | undefined {
+  const insensitive = pattern.startsWith("(?i)");
   try {
-    return new RegExp(`^(?:${pattern})$`);
-  } catch (error) {
-    throw new Error(`Invalid regex in matcher ${source}: ${(error as Error).message}`);
+    return new RegExp(`^(?:${insensitive ? pattern.slice(4) : pattern})$`, insensitive ? "i" : "");
+  } catch {
+    return undefined;
   }
 }
 
@@ -47,7 +51,9 @@ export function formatMatcher(matcher: LabelMatcher): string {
 /** Whether the matcher matches a missing/empty label value (Alertmanager semantics, anchored regex). */
 export function matcherMatchesEmpty(matcher: LabelMatcher): boolean {
   if (matcher.isRegex) {
-    const matches = compileAnchored(matcher.value, formatMatcher(matcher)).test("");
+    const regex = compileAnchored(matcher.value);
+    if (!regex) return false;
+    const matches = regex.test("");
     return matcher.isEqual ? matches : !matches;
   }
   return matcher.isEqual ? matcher.value === "" : matcher.value !== "";

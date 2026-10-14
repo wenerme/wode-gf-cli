@@ -1,11 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { GrafanaClient } from "../client";
-import {
-  comparableAlertRule,
-  getCurrentAlertRule,
-  rulerToProvisioning,
-  writeAlertRuleVersion,
-} from "./alert-rule-versions";
+import { describe, expect, it } from "vitest";
+import { comparableAlertRule, rulerToProvisioning } from "./alert-rule-versions";
 
 const rulerDto = (version: number, provenance?: string) => ({
   expr: "",
@@ -70,68 +64,5 @@ describe("alert rule versions mapping", () => {
         provenance: "api",
       }),
     ).toEqual({ uid: "r" });
-  });
-});
-
-describe("writeAlertRuleVersion", () => {
-  const calls: Array<{ method: string; headers: Record<string, string> }> = [];
-  const serve = (version: number, provenance?: string) =>
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-        calls.push({
-          method: init?.method || "GET",
-          headers: Object.fromEntries(new Headers(init?.headers).entries()),
-        });
-        const body =
-          init?.method === "PUT"
-            ? {}
-            : rulerDto(version + calls.filter((call) => call.method === "PUT").length, provenance);
-        return new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }),
-    );
-  const client = () =>
-    new GrafanaClient({
-      url: "http://127.0.0.1:3000",
-      timeoutMs: 1000,
-      debug: false,
-      dryRun: false,
-      output: "text",
-      quiet: true,
-    } as never);
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    calls.length = 0;
-  });
-
-  it("sends X-Disable-Provenance only for rules without provenance", async () => {
-    serve(3);
-    const current = await getCurrentAlertRule(client(), "r1");
-    await writeAlertRuleVersion(client(), current, { ...current.rule, title: "old" });
-    expect(calls.find((call) => call.method === "PUT")?.headers["x-disable-provenance"]).toBe("true");
-
-    calls.length = 0;
-    serve(3, "api");
-    const api = await getCurrentAlertRule(client(), "r1");
-    const after = await writeAlertRuleVersion(client(), api, { ...api.rule, title: "old" });
-    expect(calls.find((call) => call.method === "PUT")?.headers["x-disable-provenance"]).toBeUndefined();
-    expect(after.version).toBe(4);
-  });
-
-  it("refuses file-provisioned rules and rules that moved since review", async () => {
-    serve(3, "file");
-    const file = await getCurrentAlertRule(client(), "r1");
-    await expect(writeAlertRuleVersion(client(), file, file.rule)).rejects.toThrow("provisioned from file");
-
-    serve(5);
-    const stale = { ...(await getCurrentAlertRule(client(), "r1")), version: 4 };
-    await expect(writeAlertRuleVersion(client(), stale, stale.rule)).rejects.toThrow(
-      "changed after version 4",
-    );
-    expect(calls.some((call) => call.method === "PUT")).toBe(false);
   });
 });

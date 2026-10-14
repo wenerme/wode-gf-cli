@@ -19,18 +19,11 @@ import {
 } from "../lib/alert-silence";
 import { asObject, asString } from "../lib/json-narrow";
 import { resolveTimeToMs } from "../utils";
-import type { CliContext, CommandAppContext } from "./runtime";
+import type { CommandAppContext } from "./runtime";
+import { printJson, wantsJson } from "./versions-shared";
 
 const AmBase = "/api/alertmanager/grafana/api/v2";
 const DefaultCreatedBy = "wode-gf-cli";
-
-function wantsJson(ctx: CliContext, options: { json?: boolean }) {
-  return Boolean(options.json) || ctx.output === "json";
-}
-
-function printJson(value: unknown) {
-  console.log(JSON.stringify(value, null, 2));
-}
 
 function matcherFilters(values: string[]): string[] {
   return values.map((value) => formatMatcher(parseLabelMatcher(value)));
@@ -218,37 +211,43 @@ export function buildSilenceCommand(app: CommandAppContext): Command {
     .action(async function silenceExpireAction(ids: string[], options) {
       const ctx = runtime.parseCommonOptions(this as unknown as Command);
       const client = new GrafanaClient(ctx);
-      const results: Array<{ id: string; from: string; action: string; silence: Silence }> = [];
+      const results: Array<{ id: string; from: string; action: string; silence?: Silence; error?: string }> =
+        [];
       for (const id of ids) {
-        const current = await getSilence(client, id);
-        if (!current) throw new Error(`Silence not found: ${id}`);
-        if (current.state === "expired") {
-          results.push({ id, from: current.state, action: "skipped", silence: current });
-          continue;
+        try {
+          const current = await getSilence(client, id);
+          if (!current) throw new Error("silence not found");
+          if (current.state === "expired") {
+            results.push({ id, from: current.state, action: "skipped", silence: current });
+            continue;
+          }
+          if (ctx.dryRun) {
+            results.push({ id, from: current.state, action: "dry-run", silence: current });
+            continue;
+          }
+          await client.request("DELETE", `${AmBase}/silence/${encodeURIComponent(id)}`, undefined, [200]);
+          const readback = await getSilence(client, id);
+          if (readback && readback.state !== "expired") throw new Error(`readback state=${readback.state}`);
+          results.push({ id, from: current.state, action: "expired", silence: readback || current });
+        } catch (error) {
+          results.push({ id, from: "?", action: "failed", error: (error as Error).message });
         }
-        if (ctx.dryRun) {
-          results.push({ id, from: current.state, action: "dry-run", silence: current });
-          continue;
-        }
-        await client.request("DELETE", `${AmBase}/silence/${encodeURIComponent(id)}`, undefined, [200]);
-        const readback = await getSilence(client, id);
-        if (readback && readback.state !== "expired") {
-          throw new Error(`Readback mismatch for silence ${id}: state=${readback.state}`);
-        }
-        results.push({ id, from: current.state, action: "expired", silence: readback || current });
       }
+      if (results.some((item) => item.action === "failed")) process.exitCode = 1;
       if (wantsJson(ctx, options)) {
         printJson({ type: "silence-expire", dryRun: ctx.dryRun, results });
         return;
       }
       for (const item of results) {
         const prefix = item.action === "dry-run" ? "[DRY-RUN] " : "";
-        runtime.printMessage(
-          ctx,
-          `${prefix}${item.id} ${item.from} -> ${item.action === "skipped" ? "skipped (already expired)" : "expired"}  ${item.silence.matchers
-            .map(formatMatcher)
-            .join(",")}`,
-        );
+        const outcome =
+          item.action === "failed"
+            ? `failed: ${item.error}`
+            : item.action === "skipped"
+              ? "skipped (already expired)"
+              : "expired";
+        const matchers = item.silence?.matchers.map(formatMatcher).join(",") || "";
+        runtime.printMessage(ctx, `${prefix}${item.id} ${item.from} -> ${outcome}  ${matchers}`);
       }
       if (ctx.dryRun) runtime.printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
     });
