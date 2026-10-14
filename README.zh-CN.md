@@ -264,6 +264,14 @@ Dashboard 布局（本地离线；支持 classic `gridPos` 与 v2 Tabs/Rows/Grid
 - `validate --layout warn|error|off` 与 `import`/`push --layout warn|error|off` 使用同一套检查。默认 `warn` 只打印、不改变退出码；`error` 在任何写入前失败。
 - `dashboard patch-file FILE` 支持 classic 与 v2 文件（v2 上 `--panel-id` 匹配 `spec.elements[*].spec.id`），遵守 `--dry-run`；任一操作零匹配时失败（`--allow-no-match` 放行）；拒绝引入新布局错误的补丁（`--allow-layout-errors` 放行）；支持 `--forbid-layout-change`；只有内容变化时才原子写入。
 
+版本（dashboard 与 alert rule 配置历史）：
+
+- `dashboard versions list <ID> [--check-layout]` 按新到旧列出版本；`--check-layout` 对每个版本做布局检查，并标出布局错误在哪一版 `introduced`、哪一版 `fixed`。`alert-rule versions list <UID>` 还会列出每一版改了哪些顶层字段。
+- `versions get <ID> <VERSION>` 以可直接 import 的形状输出某个版本（classic 导出项、v2 resource 或 provisioning rule）。`VERSION` 可以是版本号、`current` 或 `current~N`。
+- `versions diff <ID> <FROM> [TO]` 做结构化 diff（数组按 `id`/`refId`/`uid` 对齐，插入一个 panel 只算一处变化）。两边都可以是版本、`current[~N]` 或本地文件；`dashboard versions diff --layout` 只比较布局。有差异时退出 2，出错时退出 1。
+- `versions restore <ID> <VERSION>` 把旧内容作为新版本写回，并带前置条件：classic 用 `overwrite:false` 加当前 id/version，v2 用当前 `resourceVersion` 做 PUT。期间若有人保存过，会明确报错，而不是覆盖对方。它不调用 Grafana 的 `/restore`，因为那个接口没有前置条件，而且会把 v2 dashboard 经 v1 转换后改写。restore 总是按存储格式写入（若会转换格式则拒绝，除非加 `--allow-format-change`）。支持 `--expect-version N`（当前版本不是你审过的那一版就中止）、`--dry-run` 和布局预检（`--layout`）；写入后会回读校验，若 Grafana 规范化了内容则退出 2。Alert rule 保留当前的 folder/group 和 provenance；Grafana 的 rule 写入没有前置条件，所以会在 PUT 前再核对一次版本。
+- 以 v2 维护的 dashboard（v2 原生存储，或本地文件是 v2）通过 v2beta1 history 读取；可用 `--dashboard-api classic|v2` 指定。
+
 资源/API 说明：
 
 - Alerting 资源可通过 `alert-rule`、`contact-point`、`policy` 管理；export/import 可包含 `alert-rules,contact-points,policies`。

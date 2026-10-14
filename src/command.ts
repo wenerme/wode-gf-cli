@@ -56,14 +56,17 @@ RESOURCE COMMANDS
 ${formatRows([
   [
     "dashboard / dash / d",
-    "list | search <TERM> | get <ID> | move <ID> <FOLDER> | delete <ID> | patch-file <FILE> | layout show|check|diff|fix",
+    "list | search <TERM> | get <ID> | move <ID> <FOLDER> | delete <ID> | patch-file <FILE> | layout show|check|diff|fix | versions list|get|diff|restore",
   ],
   ["connection / conn", "list | search <TERM> | get <ID> | delete <ID>"],
   [
     "folder",
     "list [--tree] | search <TERM> | get <ID|TITLE> | create <TITLE> | rename <ID|TITLE> <TITLE> | delete <ID|TITLE>",
   ],
-  ["alert-rule", "get <ID> | validate <FILE|ID> | lint <FILE|ID> | check-closure <FILE|ID> | delete <ID>"],
+  [
+    "alert-rule",
+    "get <ID> | validate <FILE|ID> | lint <FILE|ID> | check-closure <FILE|ID> | delete <ID> | versions list|get|diff|restore",
+  ],
   ["contact-point", "get <ID> | delete <ID>"],
   ["policy", "get | route upsert"],
   [

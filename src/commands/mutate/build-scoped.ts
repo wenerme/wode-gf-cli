@@ -4,6 +4,7 @@ import { asObject, asObjectArray, asString } from "../../lib/json-narrow";
 import type { ResourceName } from "../../schema";
 import { ResourceSelectorSchema } from "../../schema";
 import { attachAlertRuleOps, attachPolicyRouteOps } from "../build-alert-ops";
+import { buildAlertRuleVersionsCommand } from "../build-alert-rule-versions";
 import type { CommandAppContext } from "../runtime";
 import { type JsonObject, printResourceRows, selectResourceByToken } from "./shared";
 
@@ -214,6 +215,7 @@ export function buildAlertRuleCommand(app: CommandAppContext): Command {
   const scoped = createScopedCommand(entry);
   attachAlertRuleOps(scoped, app);
   attachAlertResourceListSearch(scoped, app, entry);
+  scoped.addCommand(buildAlertRuleVersionsCommand(app));
   attachScopedGetDelete(scoped, app, entry);
   return scoped;
 }

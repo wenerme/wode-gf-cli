@@ -273,6 +273,13 @@ Dashboard layout (local, offline; classic `gridPos` and v2 Tabs/Rows/Grid/AutoGr
 - `validate --layout warn|error|off` and `import`/`push --layout warn|error|off` run the same lint. Default `warn` only prints and keeps exit codes unchanged; `error` fails before any write.
 - `dashboard patch-file FILE` works on classic and v2 files (`--panel-id` maps to `spec.elements[*].spec.id` on v2), honors `--dry-run`, fails when an operation matches nothing (`--allow-no-match`), refuses patches that introduce new layout errors (`--allow-layout-errors`), supports `--forbid-layout-change`, and writes atomically only when content changed.
 
+Versions (dashboard and alert rule config history):
+- `dashboard versions list <ID> [--check-layout]` lists versions newest first; `--check-layout` lints every version and marks where layout errors were `introduced` or `fixed`. `alert-rule versions list <UID>` also shows which top-level fields each version changed.
+- `versions get <ID> <VERSION>` prints a version in import-ready shape (classic export item, v2 resource, or provisioning rule). `VERSION` is a number, `current`, or `current~N`.
+- `versions diff <ID> <FROM> [TO]` is a structural diff (arrays keyed by `id`/`refId`/`uid`, so one inserted panel is one change). Each side can be a version, `current[~N]`, or a local file; `dashboard versions diff --layout` compares layout only. Exit 2 when different, 1 on errors.
+- `versions restore <ID> <VERSION>` writes the old content as a new version with a precondition: classic `overwrite:false` with the current id/version, v2 PUT with the current `resourceVersion`, so a concurrent save fails with a clear error instead of being overwritten. It never calls Grafana `/restore`, which has no precondition and rewrites v2 dashboards through v1. Restore always writes in the stored format (refuses a conversion unless `--allow-format-change`). Supports `--expect-version N` (abort unless current is what you reviewed), `--dry-run`, and layout preflight (`--layout`); it verifies the readback and exits 2 if Grafana normalized the save. Alert rules keep their current folder/group and provenance; Grafana has no rule write precondition, so the version is re-checked right before the PUT.
+- Dashboards maintained as v2 (native v2 storage, or a v2 local file) are read through the v2beta1 history; use `--dashboard-api classic|v2` to override.
+
 Resource/API notes:
 - Alerting resources are available through `alert-rule`, `contact-point`, and `policy`; export/import can include `alert-rules,contact-points,policies`.
 - `api <path|url>` is a raw Grafana API escape hatch using the active context auth. It supports `-X`, `-H`, `--query`, `-f`, `--json`, `-d`, `--data-file`, `-i`, `--raw`, `--fail`, and `-o`.

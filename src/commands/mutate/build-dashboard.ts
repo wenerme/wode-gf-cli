@@ -4,6 +4,7 @@ import { asObject, asObjectArray, asString, getObjectField } from "../../lib/jso
 import { CliName } from "../../schema";
 import type { CommandAppContext } from "../runtime";
 import { buildDashboardLayoutCommand } from "./build-dashboard-layout";
+import { buildDashboardVersionsCommand } from "./build-dashboard-versions";
 import { attachScopedGetDelete, createScopedCommand, type ScopedResourceConfig } from "./build-scoped";
 import { attachDashboardPatchFile } from "./dashboard-patch-file";
 import { buildFolderMap, type JsonObject, printResourceRows, selectResourceByToken } from "./shared";
@@ -13,7 +14,7 @@ export function buildDashboardCommand(app: CommandAppContext): Command {
     cmd: "dashboard",
     aliases: ["dash", "d"],
     resource: "dashboards",
-    description: "manage dashboards (list/search/get/move/delete)",
+    description: "manage dashboards (list/search/get/move/delete/versions)",
   };
   const scoped = createScopedCommand(entry);
   const { parseCommonOptions, fetchResources, resourceItems, selectResource, printMessage, printData } =
@@ -157,6 +158,7 @@ export function buildDashboardCommand(app: CommandAppContext): Command {
     });
 
   scoped.addCommand(buildDashboardLayoutCommand(app));
+  scoped.addCommand(buildDashboardVersionsCommand(app));
   attachScopedGetDelete(scoped, app, entry);
   return scoped;
 }
