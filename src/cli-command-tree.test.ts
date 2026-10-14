@@ -27,6 +27,8 @@ describe("CLI command tree compatibility", () => {
       "alert-rule",
       "contact-point",
       "policy",
+      "alert",
+      "silence",
     ]);
   });
 

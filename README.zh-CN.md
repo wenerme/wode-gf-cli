@@ -212,6 +212,14 @@ wode-gf-cli --context local list connection --json
 wode-gf-cli --context local list alert-rule --json
 wode-gf-cli --context local policy get
 
+# 告警运行态（rule 状态、状态变迁、活跃实例、静默）
+wode-gf-cli --context local alert-rule state --state firing,pending --matcher team=sre
+wode-gf-cli --context local alert-rule state --fail-on firing,error --json
+wode-gf-cli --context local alert-rule history <rule-uid> --from now-6h
+wode-gf-cli --context local alert list --matcher team=sre
+wode-gf-cli --context local --dry-run silence create --matcher team=sre --duration 2h --comment 'maintenance'
+wode-gf-cli --context local --dry-run alert-rule pause <rule-uid>
+
 # 原始 Grafana API 逃生口
 wode-gf-cli --context local api /api/user --output json
 wode-gf-cli --context local api /api/search --query type=dash-db --query limit=1 --output json
@@ -275,6 +283,11 @@ Dashboard 布局（本地离线；支持 classic `gridPos` 与 v2 Tabs/Rows/Grid
 资源/API 说明：
 
 - Alerting 资源可通过 `alert-rule`、`contact-point`、`policy` 管理；export/import 可包含 `alert-rules,contact-points,policies`。
+- `alert-rule state [RULES]` 显示运行态 state/health、最近评估时间、firing/pending 数和 lastError。过滤：`--state`、`--health`、`--folder`、`--group`、`--matcher`（rule labels）、`--instance-matcher`、`--paused`；`--instances` 附带告警实例；`--fail-on firing,pending,recovering,error,nodata` 命中时退出 1。
+- `alert-rule history <RULE>` 列出状态变迁（`--from` 默认 `now-24h`、`--to`、`--limit`、`--label k=v`）。annotation 历史后端在服务端忽略 label 过滤，因此本地会再过滤一次。
+- `alert list`（别名 `alerts`）列出 Alertmanager 活跃实例；默认隐藏 silenced/inhibited，可用 `--silenced`/`--inhibited` 显示。
+- `silence list [--all] | create | expire <ID>` 管理静默。matcher 语法为 `k=v`、`k!=v`、`k=~re`、`k!~re`；`create` 拒绝零 matcher 或所有 matcher 都匹配空值的组合。`createdBy` 默认为当前 Grafana 登录名。
+- `alert-rule pause|resume <RULES...>` 以读-改-写方式切换 `isPaused`（服务端无版本前置条件），已处于目标状态则跳过，写后回读校验，且不改变 provenance。所有写操作都支持 `--dry-run`。
 - `api <path|url>` 是原始 Grafana API 逃生口，使用当前 context 认证，支持 `-X`、`-H`、`--query`、`-f`、`--json`、`-d`、`--data-file`、`-i`、`--raw`、`--fail`、`-o`。
 
 ## 导入单个 JSON

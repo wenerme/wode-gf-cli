@@ -1,3 +1,4 @@
+import { buildAlertCommand, buildSilenceCommand } from "./build-alertmanager";
 import { buildDashboardCommand } from "./mutate/build-dashboard";
 import { buildFolderCommand } from "./mutate/build-folder";
 import { buildRootCommands } from "./mutate/build-root";
@@ -18,5 +19,7 @@ export function buildMutateCommands(app: CommandAppContext) {
     buildAlertRuleCommand(app),
     buildContactPointCommand(app),
     buildPolicyCommand(app),
+    buildAlertCommand(app),
+    buildSilenceCommand(app),
   ];
 }

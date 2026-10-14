@@ -212,6 +212,14 @@ wode-gf-cli --context local list connection --json
 wode-gf-cli --context local list alert-rule --json
 wode-gf-cli --context local policy get
 
+# alert runtime (rule state, transitions, active instances, silences)
+wode-gf-cli --context local alert-rule state --state firing,pending --matcher team=sre
+wode-gf-cli --context local alert-rule state --fail-on firing,error --json
+wode-gf-cli --context local alert-rule history <rule-uid> --from now-6h
+wode-gf-cli --context local alert list --matcher team=sre
+wode-gf-cli --context local --dry-run silence create --matcher team=sre --duration 2h --comment 'maintenance'
+wode-gf-cli --context local --dry-run alert-rule pause <rule-uid>
+
 # raw Grafana API escape hatch
 wode-gf-cli --context local api /api/user --output json
 wode-gf-cli --context local api /api/search --query type=dash-db --query limit=1 --output json
@@ -282,6 +290,11 @@ Versions (dashboard and alert rule config history):
 
 Resource/API notes:
 - Alerting resources are available through `alert-rule`, `contact-point`, and `policy`; export/import can include `alert-rules,contact-points,policies`.
+- `alert-rule state [RULES]` shows runtime state/health, last evaluation, firing/pending counts, and last error. Filters: `--state`, `--health`, `--folder`, `--group`, `--matcher` (rule labels), `--instance-matcher`, `--paused`; `--instances` adds alert instances; `--fail-on firing,pending,recovering,error,nodata` exits 1 on a match.
+- `alert-rule history <RULE>` lists state transitions (`--from` default `now-24h`, `--to`, `--limit`, `--label k=v`). The annotation history backend ignores label filters server-side, so they are also applied locally.
+- `alert list` (alias `alerts`) lists active Alertmanager instances; silenced/inhibited ones are hidden unless `--silenced`/`--inhibited`.
+- `silence list [--all] | create | expire <ID>` manages silences. Matchers use `k=v`, `k!=v`, `k=~re`, `k!~re`; `create` refuses zero matchers or sets where every matcher matches the empty string. `createdBy` defaults to the current Grafana login.
+- `alert-rule pause|resume <RULES...>` flips `isPaused` via read-modify-write (no server-side precondition), skips rules already in that state, verifies by readback, and keeps provenance unchanged. All writes honor `--dry-run`.
 - `api <path|url>` is a raw Grafana API escape hatch using the active context auth. It supports `-X`, `-H`, `--query`, `-f`, `--json`, `-d`, `--data-file`, `-i`, `--raw`, `--fail`, and `-o`.
 
 ## Single JSON Import

@@ -5,6 +5,7 @@ import type { ResourceName } from "../../schema";
 import { ResourceSelectorSchema } from "../../schema";
 import { attachAlertRuleOps, attachPolicyRouteOps } from "../build-alert-ops";
 import { buildAlertRuleVersionsCommand } from "../build-alert-rule-versions";
+import { attachAlertRuleRuntimeOps } from "../build-alert-runtime";
 import type { CommandAppContext } from "../runtime";
 import { type JsonObject, printResourceRows, selectResourceByToken } from "./shared";
 
@@ -210,10 +211,11 @@ export function buildAlertRuleCommand(app: CommandAppContext): Command {
   const entry = {
     cmd: "alert-rule",
     resource: "alert-rules",
-    description: "manage alert rules (list/search/get/delete)",
+    description: "manage alert rules (list/search/get/state/history/pause/resume/delete)",
   } as const satisfies ScopedResourceConfig;
   const scoped = createScopedCommand(entry);
   attachAlertRuleOps(scoped, app);
+  attachAlertRuleRuntimeOps(scoped, app);
   attachAlertResourceListSearch(scoped, app, entry);
   scoped.addCommand(buildAlertRuleVersionsCommand(app));
   attachScopedGetDelete(scoped, app, entry);

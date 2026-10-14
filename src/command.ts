@@ -65,8 +65,10 @@ ${formatRows([
   ],
   [
     "alert-rule",
-    "get <ID> | validate <FILE|ID> | lint <FILE|ID> | check-closure <FILE|ID> | delete <ID> | versions list|get|diff|restore",
+    "get <ID> | state [IDS] | history <ID> | pause|resume <IDS> | validate <FILE|ID> | lint <FILE|ID> | check-closure <FILE|ID> | delete <ID> | versions list|get|diff|restore",
   ],
+  ["alert / alerts", "list [--matcher k=v] [--silenced] [--inhibited]"],
+  ["silence / silences", "list [--all] | create --matcher k=v --duration 2h --comment <TEXT> | expire <ID>"],
   ["contact-point", "get <ID> | delete <ID>"],
   ["policy", "get | route upsert"],
   [
