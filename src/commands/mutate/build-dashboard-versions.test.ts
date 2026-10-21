@@ -201,3 +201,18 @@ describe("dashboard versions diff", () => {
     ]);
   });
 });
+
+describe("version refs", () => {
+  it("explains that a directory is not a version", async () => {
+    fakeGrafana();
+    fs.mkdirSync(path.join(dir, "local"));
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const error = await run(["dashboard", "versions", "diff", "d", "local"]);
+      expect(error?.message).toContain("is a directory");
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+});

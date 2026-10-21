@@ -10,7 +10,12 @@ import {
   ResourceSelectorSchema,
 } from "../schema";
 import type { CommandAppContext, DiffItem } from "./runtime";
-import { fetchDashboardV2LocalSubset, parseDashboardApiMode, syncBundleResources } from "./sync/support";
+import {
+  fetchDashboardV2LocalSubset,
+  importCounts,
+  parseDashboardApiMode,
+  syncBundleResources,
+} from "./sync/support";
 import { layoutPreflight, parseLayoutMode } from "./validate-layout";
 
 export function buildSyncCommands(app: CommandAppContext) {
@@ -223,21 +228,19 @@ export function buildSyncCommands(app: CommandAppContext) {
           printMessage,
         );
       }
-      await importResources(ctx, merged, resources, { overwrite: options.overwrite });
-      const importedCount = resources.reduce(
-        (sum, resource) => sum + resourceItems(merged, resource).length,
-        0,
-      );
+      const result = await importResources(ctx, merged, resources, {
+        overwrite: options.overwrite,
+        collectFailures: true,
+      });
+      const counts = importCounts(merged, resources, result, resourceItems, ctx.dryRun);
       printData(ctx, "import-complete", {
         resources,
         input: resolvedSources,
         dryRun: ctx.dryRun,
-        imported: importedCount,
-        updated: ctx.dryRun ? 0 : importedCount,
-        unchanged: 0,
-        failed: 0,
-        message: `Imported resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}\nImported: ${ctx.dryRun ? 0 : importedCount} updated, 0 unchanged, 0 failed`,
+        ...counts,
+        message: `Imported resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}\n${ctx.dryRun ? "Planned" : "Imported"}: ${counts.created} created, ${counts.updated} updated, ${counts.unchanged} unchanged, ${counts.failed} failed`,
       });
+      if (counts.failed > 0) process.exitCode = 1;
       if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
     });
 
@@ -300,21 +303,19 @@ export function buildSyncCommands(app: CommandAppContext) {
           printMessage,
         );
       }
-      await importResources(ctx, merged, resources, { overwrite: options.overwrite });
-      const pushedCount = resources.reduce(
-        (sum, resource) => sum + resourceItems(merged, resource).length,
-        0,
-      );
+      const result = await importResources(ctx, merged, resources, {
+        overwrite: options.overwrite,
+        collectFailures: true,
+      });
+      const counts = importCounts(merged, resources, result, resourceItems, ctx.dryRun);
       printData(ctx, "push-complete", {
         resources,
         input: resolvedSources,
         dryRun: ctx.dryRun,
-        imported: pushedCount,
-        updated: ctx.dryRun ? 0 : pushedCount,
-        unchanged: 0,
-        failed: 0,
-        message: `Pushed resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}\nImported: ${ctx.dryRun ? 0 : pushedCount} updated, 0 unchanged, 0 failed`,
+        ...counts,
+        message: `Pushed resources: ${resources.join(",")}\nInput: ${resolvedSources.join(", ")}\n${ctx.dryRun ? "Planned" : "Pushed"}: ${counts.created} created, ${counts.updated} updated, ${counts.unchanged} unchanged, ${counts.failed} failed`,
       });
+      if (counts.failed > 0) process.exitCode = 1;
       if (ctx.dryRun) printMessage(ctx, "Dry-run mode enabled, no changes were sent.");
     });
 

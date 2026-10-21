@@ -19,14 +19,16 @@ import {
   ResourceSelectorSchema,
 } from "../schema";
 import { fetchResources } from "./fetch";
+import { importAlertRules, type RuleImportReport } from "./import-alert-rules";
 import { resourceItems, selectResource } from "./model";
 
 export async function importResources(
   ctx: RuntimeContext,
   bundle: ExportBundle,
   resources: ResourceName[],
-  options: { overwrite?: boolean } = {},
-): Promise<void> {
+  options: { overwrite?: boolean; collectFailures?: boolean } = {},
+): Promise<ImportResult> {
+  const result: ImportResult = {};
   const overwrite = options.overwrite !== false;
   const client = new GrafanaClient(ctx);
   const has = (resource: ResourceName): boolean => resources.includes(resource);
@@ -171,46 +173,20 @@ export async function importResources(
   }
 
   if (has("alert-rules") && Array.isArray(bundle["alert-rules"])) {
+    const rules = asObjectArray(bundle["alert-rules"]);
     printData(ctx, "import-alert-rules-start", {
-      count: bundle["alert-rules"].length,
-      message: `Import alert-rules: ${bundle["alert-rules"].length}`,
+      count: rules.length,
+      message: `Import alert-rules: ${rules.length}`,
     });
-    for (const rule of asObjectArray(bundle["alert-rules"])) {
-      const cleanRule = asObject(stripMeta(rule));
-      if (!cleanRule) continue;
-      const ruleUid = asString(cleanRule.uid);
-      const ruleTitle = asString(cleanRule.title);
-      if (ctx.dryRun) {
-        printData(ctx, "dry-run", {
-          resource: "alert-rules",
-          action: "upsert",
-          key: ruleUid || ruleTitle || "(unknown)",
-          message: `[DRY-RUN] alert-rule upsert ${ruleUid || ruleTitle || "(unknown)"}`,
-        });
-        continue;
-      }
-      const provenanceHeaders = { "X-Disable-Provenance": "true" };
-      if (ruleUid) {
-        try {
-          await client.request(
-            "PUT",
-            `/api/v1/provisioning/alert-rules/${encodeURIComponent(ruleUid)}`,
-            cleanRule,
-            [200],
-            provenanceHeaders,
-          );
-        } catch {
-          await client.request(
-            "POST",
-            "/api/v1/provisioning/alert-rules",
-            cleanRule,
-            [201],
-            provenanceHeaders,
-          );
-        }
-      } else {
-        await client.request("POST", "/api/v1/provisioning/alert-rules", cleanRule, [201], provenanceHeaders);
-      }
+    const report = await importAlertRules(client, rules, { dryRun: ctx.dryRun });
+    printAlertRuleImport(ctx, report);
+    result.alertRules = report;
+    // Callers that do not read the report (patch, panel edits) must still fail loudly.
+    const failed = report.items.filter((item) => item.action === "failed");
+    if (failed.length > 0 && !options.collectFailures) {
+      throw new Error(
+        `${failed.length} alert rule(s) failed to import: ${failed.map((item) => `${item.key}: ${item.error}`).join("; ")}`,
+      );
     }
   }
 
@@ -241,7 +217,9 @@ export async function importResources(
             cleanContactPoint,
             [202],
           );
-        } catch {
+        } catch (error) {
+          // Only a missing contact point is created; other errors must not be masked by a create attempt.
+          if (!String((error as Error).message).startsWith("404 ")) throw error;
           await client.request("POST", "/api/v1/provisioning/contact-points", cleanContactPoint, [202]);
         }
       } else {
@@ -261,6 +239,30 @@ export async function importResources(
     } else {
       await client.request("PUT", "/api/v1/provisioning/policies", stripMeta(bundle.policies), [202]);
     }
+  }
+  return result;
+}
+
+export type ImportResult = { alertRules?: RuleImportReport };
+
+function printAlertRuleImport(ctx: RuntimeContext, report: RuleImportReport) {
+  for (const item of report.items) {
+    if (item.action === "unchanged" && !ctx.dryRun) continue;
+    const prefix = ctx.dryRun ? "[DRY-RUN] " : item.action === "failed" ? "[ERROR] " : "";
+    const how = item.via ? ` via ${item.via}` : "";
+    const detail = item.error ? `: ${item.error}` : item.moved ? " (moved)" : "";
+    printData(ctx, ctx.dryRun ? "dry-run" : "import-alert-rule", {
+      resource: "alert-rules",
+      ...item,
+      message: `${prefix}alert-rule ${item.action} ${item.key} [${item.group}]${how}${detail}`,
+    });
+  }
+  for (const group of report.reordered) {
+    printData(ctx, "warning", {
+      resource: "alert-rules",
+      group,
+      message: `[WARN] rule group ${group} changed order during import (single-rule provisioning writes were needed: provisioned rules, rules without uid, moves from provisioned groups, or a new group)`,
+    });
   }
 }
 

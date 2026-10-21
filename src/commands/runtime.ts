@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import type { GrafanaClient } from "../client";
 import type { GrafanaPromQLMacroMode } from "../promql/grafana";
+import type { ImportResult } from "../resources/grafana";
 import type { ExportBundle, ResourceName, ResourceSelector } from "../schema";
 
 type JsonObject = Record<string, unknown>;
@@ -61,8 +62,8 @@ export type CliRuntime = {
     ctx: CliContext,
     bundle: ExportBundle,
     resources: ResourceName[],
-    options?: { overwrite?: boolean },
-  ) => Promise<void>;
+    options?: { overwrite?: boolean; collectFailures?: boolean },
+  ) => Promise<ImportResult>;
   resourceItems: (bundle: ExportBundle, resource: ResourceName) => unknown[];
   selectResource: (
     items: unknown[],

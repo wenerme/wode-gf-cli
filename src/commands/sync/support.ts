@@ -1,4 +1,5 @@
 import type { GrafanaClient } from "../../client";
+import type { ImportResult } from "../../resources/grafana";
 import type { ExportBundle, ResourceName } from "../../schema";
 
 const SyncResourceOrder = [
@@ -61,4 +62,32 @@ export async function fetchDashboardV2LocalSubset(
     }
   }
   return bundle;
+}
+
+/**
+ * Alert rules report real (or, in dry-run, planned) outcomes; other resources are still written unconditionally
+ * and count as updated (0 in dry-run).
+ */
+export function importCounts(
+  bundle: ExportBundle,
+  resources: ResourceName[],
+  result: ImportResult,
+  items: (bundle: ExportBundle, resource: ResourceName) => unknown[],
+  dryRun: boolean,
+) {
+  const counts = { imported: 0, created: 0, updated: 0, unchanged: 0, failed: 0 };
+  for (const resource of resources) {
+    const total = items(bundle, resource).length;
+    counts.imported += total;
+    if (resource === "alert-rules" && result.alertRules) {
+      for (const item of result.alertRules.items) {
+        // In dry-run these are the planned actions (nothing was written).
+        if (item.action === "failed") counts.failed += 1;
+        else if (item.action === "create") counts.created += 1;
+        else if (item.action === "update") counts.updated += 1;
+        else counts.unchanged += 1;
+      }
+    } else if (!dryRun) counts.updated += total;
+  }
+  return counts;
 }

@@ -98,12 +98,29 @@ const client = () =>
 afterEach(() => vi.unstubAllGlobals());
 
 describe("applyProvisioningToRuler", () => {
-  it("round-trips a ruler DTO through the provisioning shape", () => {
+  it("round-trips a ruler DTO through the provisioning shape, sending every optional field explicitly", () => {
     const original = dto("a", 3);
     expect(applyProvisioningToRuler(original, rulerToProvisioning(original))).toEqual({
       ...original,
-      keep_firing_for: undefined,
+      keep_firing_for: "0s",
       grafana_alert: { ...original.grafana_alert, missing_series_evals_to_resolve: 0 },
+    });
+  });
+
+  it("builds a complete new rule from an empty DTO", () => {
+    const built = applyProvisioningToRuler({}, { uid: "n", title: "N", condition: "C", data: [] });
+    expect(built).toMatchObject({
+      for: "0s",
+      keep_firing_for: "0s",
+      labels: {},
+      annotations: {},
+      grafana_alert: {
+        uid: "n",
+        no_data_state: "NoData",
+        exec_err_state: "Error",
+        is_paused: false,
+        missing_series_evals_to_resolve: 0,
+      },
     });
   });
 });

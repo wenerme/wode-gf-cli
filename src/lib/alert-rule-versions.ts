@@ -63,6 +63,8 @@ function toVersion(dto: JsonObject): AlertRuleVersion {
 /** Drops server bookkeeping and empty optional fields so provisioning GETs, versions and local files compare equal. */
 export function comparableAlertRule(rule: JsonObject): JsonObject {
   const { id: _id, orgID: _org, updated: _updated, provenance: _prov, ...rest } = rule;
+  // A key holding undefined is the same as no key (JSON files and Grafana responses never carry undefined).
+  for (const key of Object.keys(rest)) if (rest[key] === undefined) delete rest[key];
   for (const key of ["labels", "annotations"] as const) {
     const value = asObject(rest[key]);
     if (!value || Object.keys(value).length === 0) delete rest[key];
@@ -70,7 +72,33 @@ export function comparableAlertRule(rule: JsonObject): JsonObject {
   for (const key of ["notification_settings", "record"] as const) if (rest[key] == null) delete rest[key];
   if (rest.keep_firing_for === "0s") delete rest.keep_firing_for;
   if (rest.isPaused === false) delete rest.isPaused;
+  if (rest.missingSeriesEvalsToResolve === 0) delete rest.missingSeriesEvalsToResolve;
+  if (Array.isArray(rest.data)) rest.data = rest.data.map(comparableQuery);
   return rest;
+}
+
+/** Values Grafana fills in on save, so a hand-written rule file compares equal to what Grafana stores. */
+function comparableQuery(value: unknown): unknown {
+  const query = asObject(value);
+  if (!query) return value;
+  const { queryType, relativeTimeRange, model, ...rest } = query;
+  const out: JsonObject = { ...rest };
+  if (queryType) out.queryType = queryType;
+  const range = asObject(relativeTimeRange);
+  if (range && (range.from || range.to)) out.relativeTimeRange = range;
+  const m = asObject(model);
+  if (m) {
+    const { intervalMs, maxDataPoints, ...modelRest } = m;
+    out.model = {
+      ...modelRest,
+      // Grafana stores 0/absent as these defaults (models/alert_query.go).
+      ...(intervalMs !== undefined && intervalMs !== 0 && intervalMs !== 1000 ? { intervalMs } : {}),
+      ...(maxDataPoints !== undefined && maxDataPoints !== 0 && maxDataPoints !== 43200
+        ? { maxDataPoints }
+        : {}),
+    };
+  } else if (model !== undefined) out.model = model;
+  return out;
 }
 
 export async function resolveAlertRuleUid(client: GrafanaClient, token: string): Promise<string> {

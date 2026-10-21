@@ -14,9 +14,16 @@ export function parseVersionRef(token: string): VersionRef {
   if (/^\d+$/.test(value)) return { kind: "version", version: Number(value) };
   const current = value.match(/^(?:current|latest|HEAD)(?:~(\d+))?$/i);
   if (current) return { kind: "current", back: Number(current[1] || 0) };
-  if (fs.existsSync(value)) return { kind: "file", file: path.resolve(value) };
+  if (fs.existsSync(value)) {
+    if (fs.statSync(value).isDirectory()) {
+      throw new Error(
+        `"${token}" is a directory; FROM/TO take one JSON file, e.g. \`versions diff <ID> path/to/rule.json\``,
+      );
+    }
+    return { kind: "file", file: path.resolve(value) };
+  }
   throw new Error(
-    `Invalid version "${token}": use a version number, current, current~N, or an existing file`,
+    `Invalid version "${token}": use a version number, current, current~N, or a JSON file path (\`versions diff <ID> <FILE>\` compares the file with current)`,
   );
 }
 

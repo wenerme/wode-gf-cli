@@ -38,27 +38,31 @@ async function getRulerGroup(client: GrafanaClient, folderUid: string, group: st
 const uidOf = (dto: JsonObject) => asString(getObjectField(dto, "grafana_alert")?.uid) || "";
 
 /** Provisioning-shaped spec -> the ruler DTO of the same rule (location fields are left as stored). */
+/**
+ * Provisioning-shaped spec -> ruler DTO, as a full replacement of the rule's spec (the provisioning PUT semantics).
+ * The ruler API reads a missing optional field as "keep current", and for a new rule "current" is invalid
+ * (`missing_series_evals_to_resolve` -1, `keep_firing_for` negative), so every field is sent explicitly.
+ * `dto` supplies identity and location; pass `{}` plus a uid to build a new rule.
+ */
 export function applyProvisioningToRuler(dto: JsonObject, rule: JsonObject): JsonObject {
-  const ga = { ...(getObjectField(dto, "grafana_alert") || {}) };
-  const set = (key: string, value: unknown) => {
-    if (value !== undefined) ga[key] = value;
-  };
-  set("title", rule.title);
-  set("condition", rule.condition);
-  set("data", rule.data);
-  set("no_data_state", rule.noDataState);
-  set("exec_err_state", rule.execErrState);
-  set("is_paused", rule.isPaused === true);
-  set("notification_settings", rule.notification_settings ?? undefined);
-  set("record", rule.record ?? undefined);
-  // Absent means "default", but the ruler API treats a missing value as "keep current"; 0 resets it.
+  const ga: JsonObject = { ...(getObjectField(dto, "grafana_alert") || {}) };
+  if (!ga.uid && rule.uid) ga.uid = rule.uid;
+  ga.title = rule.title;
+  ga.condition = rule.condition;
+  ga.data = rule.data;
+  ga.no_data_state = rule.noDataState ?? "NoData";
+  ga.exec_err_state = rule.execErrState ?? "Error";
+  ga.is_paused = rule.isPaused === true;
+  // 0 means "default" here; absent would mean "keep current".
   ga.missing_series_evals_to_resolve = rule.missingSeriesEvalsToResolve ?? 0;
-  if (rule.notification_settings === null) delete ga.notification_settings;
-  if (rule.record === null) delete ga.record;
+  for (const key of ["notification_settings", "record"] as const) {
+    if (rule[key] == null) delete ga[key];
+    else ga[key] = rule[key];
+  }
   return {
     ...dto,
-    for: rule.for ?? dto.for,
-    keep_firing_for: rule.keep_firing_for ?? dto.keep_firing_for,
+    for: rule.for ?? "0s",
+    keep_firing_for: rule.keep_firing_for ?? "0s",
     labels: rule.labels ?? {},
     annotations: rule.annotations ?? {},
     grafana_alert: ga,
